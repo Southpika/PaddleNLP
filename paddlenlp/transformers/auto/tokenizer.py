@@ -117,6 +117,7 @@ FAST_TOKENIZER_MAPPING_NAMES = OrderedDict(
         ("RobertaBPEFastTokenizer", "roberta"),
         ("ErnieTinyFastTokenizer", "ernie"),
         ("LlamaFastTokenizer", "llama"),
+        ("QWenFastTokenizer", "qwen"),
     ]
 )
 # For FastTokenizer
@@ -359,7 +360,6 @@ class AutoTokenizer:
         # Assuming from community-contributed pretrained models
         else:
             url_list = [COMMUNITY_MODEL_PREFIX, pretrained_model_name_or_path, cls.tokenizer_config_file]
-            breakpoint()
             cache_dir = os.path.join(cache_dir, pretrained_model_name_or_path, subfolder)
             if subfolder != "":
                 url_list.insert(2, subfolder)
