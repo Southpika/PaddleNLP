@@ -23,7 +23,7 @@ from tokenizers import Tokenizer as HFTokenizer
 
 from paddlenlp.transformers import AutoTokenizer
 
-MODEL_NAME = "baichuan-inc/Baichuan-7B"
+MODEL_NAME = "qwen/qwen-7b"
 
 
 def measure_time_and_memory(func, *args, **kwargs):
@@ -44,11 +44,11 @@ def measure_time_and_memory(func, *args, **kwargs):
 
 @pytest.fixture
 def setup_inputs():
-    single_s = (
-        "In the intricate tapestry of linguistic expression, the amalgamation of diverse syntactic structures, nuanced vocabulary,"
-        "and convoluted clauses not only challenges the adeptness of tokenization algorithms but also underscores the formidable complexity inherent in natural language processing tasks."
-    )
-    # single_s = '今天天气很好'
+    # single_s = (
+    #     "In the intricate tapestry of linguistic expression, the amalgamation of diverse syntactic structures, nuanced vocabulary,"
+    #     "and convoluted clauses not only challenges the adeptness of tokenization algorithms but also underscores the formidable complexity inherent in natural language processing tasks."
+    # )
+    single_s = "自然语言处理（NLP）是一种人工智能技术，致力于使计算机能够理解、解释和生成人类语言。通过NLP，计算机可以处理和分析大量的自然语言数据，实现自动翻译、情感分析、语言生成等任务，为各种应用场景提供智能化解决方案，如智能客服、信息抽取和文本分类等。"
     return single_s
 
 
@@ -56,7 +56,7 @@ def setup_inputs():
 def tokenizer_fast_hf():
     from transformers import AutoTokenizer
 
-    fast_tokenizer_hf = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+    fast_tokenizer_hf = AutoTokenizer.from_pretrained("Qwen/Qwen-7B", use_fast=True, trust_remote_code=True)
     return fast_tokenizer_hf
 
 
@@ -73,8 +73,8 @@ def tokenizer_base():
 
 
 def test_tokenizer_type(tokenizer_fast_hf, tokenizer_fast, tokenizer_base):
-    assert isinstance(tokenizer_fast_hf._tokenizer, HFTokenizer)
-    # assert isinstance(tokenizer_fast._tokenizer, HFTokenizer)
+    # assert isinstance(tokenizer_fast_hf, HFTokenizer)
+    assert isinstance(tokenizer_fast._tokenizer, HFTokenizer)
     assert not hasattr(tokenizer_base, "_tokenizer")
     # assert tokenizer_fast_hf.from_hub == "huggingface"
     assert tokenizer_fast.from_hub == tokenizer_base.from_hub
