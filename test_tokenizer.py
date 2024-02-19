@@ -16,27 +16,28 @@ import time
 
 import numpy as np
 import paddle
-import psutil
+
+# import psutil
 import pytest
 from tokenizers import Tokenizer as HFTokenizer
 
 from paddlenlp.transformers import AutoTokenizer
 
-MODEL_NAME = "ernie-m-base"
+MODEL_NAME = "baichuan-inc/Baichuan-7B"
 
 
 def measure_time_and_memory(func, *args, **kwargs):
     start_time = time.time()
-    process = psutil.Process()
-    start_memory = process.memory_info().rss / 1024 / 1024
+    # process = psutil.Process()
+    # start_memory = process.memory_info().rss / 1024 / 1024
 
     result = func(*args, **kwargs)
 
     end_time = time.time()
-    end_memory = process.memory_info().rss / 1024 / 1024
+    # end_memory = process.memory_info().rss / 1024 / 1024
 
     execution_time = end_time - start_time
-    memory_usage = end_memory - start_memory
+    memory_usage = None
 
     return result, execution_time, memory_usage
 
@@ -53,6 +54,8 @@ def setup_inputs():
 
 @pytest.fixture
 def tokenizer_fast_hf():
+    from transformers import AutoTokenizer
+
     fast_tokenizer_hf = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
     return fast_tokenizer_hf
 
