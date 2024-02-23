@@ -16,12 +16,16 @@ import time
 
 import numpy as np
 import paddle
+import paddlenlp
 
 # import psutil
 import pytest
 from tokenizers import Tokenizer as HFTokenizer
 
 from paddlenlp.transformers import AutoTokenizer
+
+
+
 
 MODEL_NAME = "THUDM/chatglm3-6b"
 
@@ -49,7 +53,8 @@ def setup_inputs():
     #     "and convoluted clauses not only challenges the adeptness of tokenization algorithms but also underscores the formidable complexity inherent in natural language processing tasks."
     # )
     single_s = "自然语言处理（NLP）是一种人工智能技术，致力于使计算机能够理解、解释和生成人类语言。通过NLP，计算机可以处理和分析大量的自然语言数据，实现自动翻译、情感分析、语言生成等任务，为各种应用场景提供智能化解决方案，如智能客服、信息抽取和文本分类等。"
-    return single_s
+    train_ds, test_ds = paddlenlp.datasets.load_dataset('lcsts_new')
+    return train_ds
 
 
 @pytest.fixture
@@ -94,9 +99,22 @@ def test_tokenizer_cost(tokenizer_fast_hf, tokenizer_fast, tokenizer_base, setup
 
 
 def test_tokenizer_decode(tokenizer_fast_hf, tokenizer_fast, tokenizer_base, setup_inputs):
-    token_hf = tokenizer_fast_hf(setup_inputs)
-    token_fast = tokenizer_fast(setup_inputs)
-    token_base = tokenizer_base(setup_inputs)
+    def convert_example(example, tokenizer):
+        tokenized_example = tokenizer(
+                                text=example['source'])
+        # 加上label用于训练
+        tokenized_example['label'] = [example['target']]
+        return tokenized_example
+    from functools import partial
+
+    trans_func = partial(
+        convert_example,
+        tokenizer=tokenizer_fast)
+
+    token_fast = setup_inputs.map(trans_func)
+    # token_hf = tokenizer_fast_hf(setup_inputs)
+    # token_fast = tokenizer_fast(setup_inputs)
+    # token_base = tokenizer_base(setup_inputs)
     breakpoint()
     assert token_hf["input_ids"] == token_fast["input_ids"] == token_base["input_ids"]
 
