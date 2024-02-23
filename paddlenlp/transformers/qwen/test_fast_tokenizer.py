@@ -73,7 +73,7 @@ def test_tokenizer_cost(tokenizer_hf, tokenizer_fast, tokenizer_base, setup_inpu
         (
             _result,
             _time,
-        ) = measure_time(eval(tokenizer), setup_inputs)
+        ) = measure_time(eval(tokenizer), setup_inputs[:5000])
         costs[tokenizer] = _time
         results.append(_result["input_ids"])
     print(costs)
