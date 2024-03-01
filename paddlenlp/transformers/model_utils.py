@@ -1740,7 +1740,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         # that are loaded, but always on the keys of the newly initialized model
         remove_prefix_from_model = not has_prefix_module and expects_prefix_module
         add_prefix_to_model = has_prefix_module and not expects_prefix_module
-
+        breakpoint()
         if remove_prefix_from_model:
             _prefix = f"{prefix}."
             expected_keys_not_prefixed = [s for s in expected_keys if not s.startswith(_prefix)]
@@ -1805,7 +1805,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 if any(module_to_keep_in_fp32 in name for module_to_keep_in_fp32 in keep_in_fp32_modules):
                     if param.dtype != paddle.float32:
                         param = param.to(dtype=paddle.float32)
-
+        breakpoint()
         # Make sure we are able to load base models as well as derived models (with heads)
         start_prefix = ""
         model_to_load = model
@@ -2198,7 +2198,6 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             else:
                 raise ValueError(f"Unexpected file: {resolved_archive_file} for weight conversion.")
             # load pt weights early so that we know which dtype to init the model under
-
         if not is_sharded and state_dict is None:
             # 4. loading non-sharded ckpt from the state dict
             if config.tensor_parallel_degree > 1 and resolved_archive_file.endswith("model_state.pdparams"):
@@ -2217,7 +2216,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         use_keep_in_fp32_modules = (cls._keep_in_fp32_modules is not None) and (
             dtype == "float16" or dtype == "bfloat16"
         )
-
+        # 报错过一次
         if is_sharded:
             loaded_state_dict_keys = sharded_metadata["all_checkpoint_keys"]
         else:
@@ -2232,6 +2231,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 if not isinstance(state_dict[k], paddle.Tensor):
                     with device_guard():
                         state_dict[k] = paddle.Tensor(state_dict.pop(k), zero_copy=True)
+        # breakpoint()
         # 3. init the model
         init_args = config["init_args"] or ()
         with ContextManagers(init_contexts):
@@ -2269,6 +2269,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             keep_in_fp32_modules=keep_in_fp32_modules,
             quantization_linear_list=quantization_linear_list,
         )
+        breakpoint()
 
         # load generation_config.json
         if model.can_generate() and pretrained_model_name_or_path is not None:

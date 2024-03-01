@@ -127,6 +127,7 @@ MAPPING_NAMES = OrderedDict(
         ("Blip", "blip"),
         ("Bloom", "bloom"),
         ("QWen", "qwen"),
+        ("Gemma", "gemma"),
     ]
 )
 
@@ -408,6 +409,7 @@ class _BaseAutoModelClass:
             if os.path.exists(resolved_vocab_file):
                 model_class = cls._get_model_class_from_config(pretrained_model_name_or_path, resolved_vocab_file)
                 logger.info(f"We are using {model_class} to load '{pretrained_model_name_or_path}'.")
+                print(kwargs, model_class)
                 return model_class.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
             else:
                 logger.warning(f"{resolved_vocab_file}  is not a valid path to a model config file")

@@ -140,10 +140,10 @@ class GemmaTokenizer(PretrainedTokenizer):
         for ids in token_ids:
             if skip_special_tokens and ids in self.all_special_ids:
                 continue
-            if ids in self._added_tokens_decoder:
+            if ids in self.added_tokens_decoder:
                 if current_sub_text:
                     sub_texts.append(self.sp_model.decode(current_sub_text))
-                sub_texts.append(self._added_tokens_decoder[ids].content)
+                sub_texts.append(self.added_tokens_decoder[ids].content)
                 current_sub_text = []
             else:
                 current_sub_text.append(ids)

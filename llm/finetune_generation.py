@@ -53,7 +53,7 @@ def read_local_dataset(path):
     with open(path, "r", encoding="utf-8") as fp:
         for line in fp:
             yield json.loads(line.strip())
-
+import paddle.distributed.launch
 
 def main():
     # Arguments
