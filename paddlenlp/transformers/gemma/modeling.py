@@ -159,7 +159,7 @@ def repeat_kv(hidden_states: paddle.Tensor, n_rep: int) -> paddle.Tensor:
     return hidden_states.reshape([batch, slen, num_key_value_heads * n_rep, head_dim])
 
 
-def parallel_matmul(x: Tensor, y: Tensor, tensor_parallel_output=True):
+def parallel_matmul(x: Tensor, y: paddle.base.framework.EagerParamBase, tensor_parallel_output=True):
     is_fleet_init = True
     tensor_parallel_degree = 1
     try:
@@ -177,7 +177,7 @@ def parallel_matmul(x: Tensor, y: Tensor, tensor_parallel_output=True):
     if is_fleet_init and tensor_parallel_degree > 1 and y_is_distributed:
         # if not running under distributed.launch, it will raise AttributeError: 'Fleet' object has no attribute '_hcg'
         input_parallel = paddle.distributed.collective._c_identity(x, group=model_parallel_group)
-        logits = paddle.matmul(input_parallel, y, transpose_y=False)
+        logits = paddle.matmul(input_parallel, y.transpose([1,0]), transpose_y=False)
 
         if tensor_parallel_output:
             return logits
@@ -185,7 +185,7 @@ def parallel_matmul(x: Tensor, y: Tensor, tensor_parallel_output=True):
         return paddle.distributed.collective._c_concat(logits, group=model_parallel_group)
 
     else:
-        logits = paddle.matmul(x, y, transpose_y=False)
+        logits = paddle.matmul(x, y.transpose([1,0]), transpose_y=False)
         return logits
 
 
@@ -423,7 +423,6 @@ class GemmaMLP(nn.Layer):
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
         self.tensor_parallel_degree = config.tensor_parallel_degree
-        self.fuse_attention_ffn = config.fuse_attention_ffn
 
         if config.sequence_parallel:
             ColumnParallelLinear = ColumnSequenceParallelLinear
@@ -433,27 +432,18 @@ class GemmaMLP(nn.Layer):
             RowParallelLinear = mpu.RowParallelLinear
 
         if config.tensor_parallel_degree > 1:
-            if config.fuse_attention_ffn:
-                self.gate_up_fused_proj = ColumnParallelLinear(
-                    self.hidden_size,
-                    self.intermediate_size * 2,
-                    gather_output=False,
-                    has_bias=False,
-                )
-            else:
-                self.gate_proj = ColumnParallelLinear(
-                    self.hidden_size,
-                    self.intermediate_size,
-                    gather_output=False,
-                    has_bias=False,
-                )
-                self.up_proj = ColumnParallelLinear(
-                    self.hidden_size,
-                    self.intermediate_size,
-                    gather_output=False,
-                    has_bias=False,
-                )
-
+            self.gate_proj = ColumnParallelLinear(
+                self.hidden_size,
+                self.intermediate_size,
+                gather_output=False,
+                has_bias=False,
+            )
+            self.up_proj = ColumnParallelLinear(
+                self.hidden_size,
+                self.intermediate_size,
+                gather_output=False,
+                has_bias=False,
+            )
             self.down_proj = RowParallelLinear(
                 self.intermediate_size,
                 self.hidden_size,
@@ -461,22 +451,14 @@ class GemmaMLP(nn.Layer):
                 has_bias=False,
             )
         else:
-            if config.fuse_attention_ffn:
-                self.gate_up_fused_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias_attr=False)
-            else:
-                self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias_attr=False)
-                self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias_attr=False)
-
+            self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias_attr=False)
+            self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias_attr=False)
             self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias_attr=False)
 
 
     def forward(self, x):
         # GeGLU
-        if self.fuse_attention_ffn:
-            gate_out, up_out = paddle.chunk(self.gate_up_fused_proj(x), chunks=2, axis=-1)
-            out = self.down_proj(F.gelu(gate_out) * up_out)
-        else:
-            out = self.down_proj(F.gelu(self.gate_proj(x)) * self.up_proj(x))
+        out = self.down_proj(F.gelu(self.gate_proj(x)) * self.up_proj(x))
         return out
 
 class GemmaAttention(nn.Layer):
@@ -490,26 +472,15 @@ class GemmaAttention(nn.Layer):
         self.attention_dropout = config.attention_dropout # add
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-
-        assert self.hidden_size % config.num_attention_heads == 0 # add
-        self.head_dim = self.hidden_size // config.num_attention_heads
+        self.head_dim = config.head_dim
 
         self.num_key_value_heads = config.num_key_value_heads
-        assert config.num_attention_heads % config.num_key_value_heads == 0 # add
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
 
         self.max_position_embeddings = config.max_position_embeddings
         self.seq_length = config.seq_length 
         self.rope_theta = config.rope_theta
         self.sequence_parallel = config.sequence_parallel
-
-        self.fuse_attention_qkv = config.fuse_attention_qkv
-
-        self.fuse_attention_qkv = config.fuse_attention_qkv
-        if self.fuse_attention_qkv and config.num_attention_heads != config.num_key_value_heads:
-            raise ValueError(
-                f"fuse_attention_qkv can't be True when num_attention_heads {config.num_attention_heads}!= num_key_value_heads {config.num_key_value_heads}"
-            )
 
         self.kv_indices = None
         # Note that we will actually perform a recompute only if both enable_recompute and layerwise_recompute are set to True
@@ -552,58 +523,27 @@ class GemmaAttention(nn.Layer):
             RowParallelLinear = mpu.RowParallelLinear
 
         if config.tensor_parallel_degree > 1:
-            if self.fuse_attention_qkv:
-                self.qkv_proj = ColumnParallelLinear(
+            self.q_proj = ColumnParallelLinear(
+                self.hidden_size,
+                self.num_heads * self.head_dim,
+                has_bias=config.attention_bias,
+                gather_output=False,
+            )
+            if self.kv_indices is None:
+                # to revise shape
+                self.k_proj = ColumnParallelLinear(
                     self.hidden_size,
-                    3 * self.hidden_size,
+                    self.config.num_key_value_heads * self.head_dim,
+                    has_bias=config.attention_bias,
+                    gather_output=False,
+                )
+                self.v_proj = ColumnParallelLinear(
+                    self.hidden_size,
+                    self.config.num_key_value_heads * self.head_dim,
                     has_bias=config.attention_bias,
                     gather_output=False,
                 )
             else:
-                self.q_proj = ColumnParallelLinear(
-                    self.hidden_size,
-                    self.hidden_size,
-                    has_bias=config.attention_bias,
-                    gather_output=False,
-                )
-                if self.kv_indices is None:
-                    self.k_proj = ColumnParallelLinear(
-                        self.hidden_size,
-                        self.config.num_key_value_heads * self.head_dim,
-                        has_bias=config.attention_bias,
-                        gather_output=False,
-                    )
-                    self.v_proj = ColumnParallelLinear(
-                        self.hidden_size,
-                        self.config.num_key_value_heads * self.head_dim,
-                        has_bias=config.attention_bias,
-                        gather_output=False,
-                    )
-                else:
-                    self.k_proj = nn.Linear(
-                        self.hidden_size,
-                        self.config.num_key_value_heads * self.head_dim,
-                        bias_attr=False,
-                    )
-                    self.v_proj = nn.Linear(
-                        self.hidden_size,
-                        self.config.num_key_value_heads * self.head_dim,
-                        bias_attr=False,
-                    )
-
-        else:
-            if self.fuse_attention_qkv:
-                self.qkv_proj = nn.Linear(
-                    self.hidden_size,
-                    3 * self.hidden_size,
-                    bias_attr=False,
-                )
-            else:
-                self.q_proj = nn.Linear(
-                    self.hidden_size,
-                    self.hidden_size,
-                    bias_attr=False,
-                )
                 self.k_proj = nn.Linear(
                     self.hidden_size,
                     self.config.num_key_value_heads * self.head_dim,
@@ -615,6 +555,23 @@ class GemmaAttention(nn.Layer):
                     bias_attr=False,
                 )
 
+        else:
+            self.q_proj = nn.Linear(
+                self.hidden_size,
+                self.num_heads * self.head_dim,
+                bias_attr=False,
+            )
+            self.k_proj = nn.Linear(
+                self.hidden_size,
+                self.config.num_key_value_heads * self.head_dim,
+                bias_attr=False,
+            )
+            self.v_proj = nn.Linear(
+                self.hidden_size,
+                self.config.num_key_value_heads * self.head_dim,
+                bias_attr=False,
+            )
+
         if config.tensor_parallel_degree > 1:
             self.o_proj = RowParallelLinear(
                 self.hidden_size,
@@ -624,7 +581,7 @@ class GemmaAttention(nn.Layer):
             )
         else:
             self.o_proj = nn.Linear(
-                self.hidden_size,
+                self.num_heads * self.head_dim,
                 self.hidden_size,
                 bias_attr=False,
             )
@@ -655,80 +612,54 @@ class GemmaAttention(nn.Layer):
         """Input shape: Batch x Time x Channel"""
         # [bs, seq_len, num_head * head_dim] -> [seq_len / n, bs, num_head * head_dim] (n is model parallelism)
 
-        if self.fuse_attention_qkv:
-            mix_layer = self.qkv_proj(hidden_states)
-            if self.reshard_layer is not None:
-                if self.sequence_parallel:
-                    assert self.seq_length % self.config.sep_parallel_degree == 0
-                    mix_layer = paddle.reshape_(
-                        mix_layer,
-                        [-1, self.seq_length // self.config.sep_parallel_degree, 3 * self.num_heads * self.head_dim],
-                    )
-                # [bs, seq_len / sep, num_head, head_dim] -> [bs, seq_len, num_head / sep, head_dim]
-                mix_layer = self.reshard_layer(
-                    mix_layer,
-                    split_axis=2,
-                    concat_axis=1,
-                )
-                mix_layer = paddle.reshape_(
-                    mix_layer, [0, self.seq_length, -1, 3 * self.head_dim]
-                )  # [bs, seq_len, num_head/k, 3*head_dim], k is sep degree
-            else:
-                if self.sequence_parallel:
-                    target_shape = [-1, self.seq_length, self.num_heads, 3 * self.head_dim]
-                else:
-                    target_shape = [0, 0, self.num_heads, 3 * self.head_dim]
-                mix_layer = paddle.reshape_(mix_layer, target_shape)
-            query_states, key_states, value_states = paddle.split(mix_layer, num_or_sections=3, axis=-1)
-        else:
-            query_states = self.q_proj(hidden_states)
-            key_states = self.k_proj(hidden_states)
-            value_states = self.v_proj(hidden_states)
-            if self.reshard_layer is not None:
-                if self.sequence_parallel:
-                    assert self.seq_length % self.config.sep_parallel_degree == 0
-                    query_states = paddle.reshape(
-                        query_states,
-                        [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
-                    )
-                    key_states = paddle.reshape(
-                        key_states,
-                        [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
-                    )
-                    value_states = paddle.reshape(
-                        value_states,
-                        [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
-                    )
-                query_states = self.reshard_layer(
-                    query_states,
-                    split_axis=2,
-                    concat_axis=1,
-                )
-                key_states = self.reshard_layer(
-                    key_states,
-                    split_axis=2,
-                    concat_axis=1,
-                )
-                value_states = self.reshard_layer(
-                    value_states,
-                    split_axis=2,
-                    concat_axis=1,
-                )
+        query_states = self.q_proj(hidden_states)
+        key_states = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+        if self.reshard_layer is not None:
+            if self.sequence_parallel:
+                assert self.seq_length % self.config.sep_parallel_degree == 0
                 query_states = paddle.reshape(
-                    query_states, [0, self.seq_length, -1, self.head_dim]
-                )  # [bs, seq_len, num_head/k, head_dim], k is sep degree
-                key_states = paddle.reshape(key_states, [0, self.seq_length, -1, self.head_dim])
-                value_states = paddle.reshape(value_states, [0, self.seq_length, -1, self.head_dim])
+                    query_states,
+                    [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
+                )
+                key_states = paddle.reshape(
+                    key_states,
+                    [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
+                )
+                value_states = paddle.reshape(
+                    value_states,
+                    [-1, self.seq_length // self.config.sep_parallel_degree, self.num_heads * self.head_dim],
+                )
+            query_states = self.reshard_layer(
+                query_states,
+                split_axis=2,
+                concat_axis=1,
+            )
+            key_states = self.reshard_layer(
+                key_states,
+                split_axis=2,
+                concat_axis=1,
+            )
+            value_states = self.reshard_layer(
+                value_states,
+                split_axis=2,
+                concat_axis=1,
+            )
+            query_states = paddle.reshape(
+                query_states, [0, self.seq_length, -1, self.head_dim]
+            )  # [bs, seq_len, num_head/k, head_dim], k is sep degree
+            key_states = paddle.reshape(key_states, [0, self.seq_length, -1, self.head_dim])
+            value_states = paddle.reshape(value_states, [0, self.seq_length, -1, self.head_dim])
+        else:
+            if self.sequence_parallel:
+                target_query_shape = [-1, self.seq_length, self.num_heads, self.head_dim]
+                target_key_value_shape = [-1, self.seq_length, self.num_key_value_heads, self.head_dim]
             else:
-                if self.sequence_parallel:
-                    target_query_shape = [-1, self.seq_length, self.num_heads, self.head_dim]
-                    target_key_value_shape = [-1, self.seq_length, self.num_key_value_heads, self.head_dim]
-                else:
-                    target_query_shape = [0, 0, self.num_heads, self.head_dim]
-                    target_key_value_shape = [0, 0, self.num_key_value_heads, self.head_dim]
-                query_states = query_states.reshape(shape=target_query_shape)
-                key_states = key_states.reshape(shape=target_key_value_shape)
-                value_states = value_states.reshape(shape=target_key_value_shape)
+                target_query_shape = [0, 0, self.num_heads, self.head_dim]
+                target_key_value_shape = [0, 0, self.num_key_value_heads, self.head_dim]
+            query_states = query_states.reshape(shape=target_query_shape)
+            key_states = key_states.reshape(shape=target_key_value_shape)
+            value_states = value_states.reshape(shape=target_key_value_shape)
 
         kv_seq_len = key_states.shape[-3]
 
@@ -948,8 +879,8 @@ class GemmaPretrainedModel(PretrainedModel):
     base_model_prefix = "gemma"
     pretrained_init_configuration = GEMMA_PRETRAINED_INIT_CONFIGURATION
     pretrained_resource_files_map = GEMMA_PRETRAINED_RESOURCE_FILES_MAP
-    _keys_to_ignore_on_load_unexpected = [r"self_attn.rotary_emb.inv_freq"]
-    _keep_in_fp32_modules = ["inv_freq", "rotary_emb", "cos_cached", "sin_cached"]
+    _keys_to_ignore_on_load_unexpected = []
+    _keep_in_fp32_modules = ["inv_freq", "rotary_emb",  "cos_cached", "sin_cached"]
 
     @classmethod
     def _get_name_mappings(cls, config: GemmaConfig) -> list[StateDictNameMapping]:
@@ -964,7 +895,6 @@ class GemmaPretrainedModel(PretrainedModel):
                 [f"layers.{layer_index}.self_attn.k_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.v_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.o_proj.weight", None, "transpose"],
-                # [f"layers.{layer_index}.self_attn.rotary_emb.inv_freq"],
                 [f"layers.{layer_index}.mlp.gate_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.mlp.down_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.mlp.up_proj.weight", None, "transpose"],
@@ -978,7 +908,7 @@ class GemmaPretrainedModel(PretrainedModel):
             for mapping in model_mappings:
                 mapping[0] = "model." + mapping[0]
                 mapping[1] = "gemma." + mapping[1]
-            model_mappings.append(["lm_head.weight", "lm_head.weight", "transpose"])
+            # model_mappings.append(["lm_head.weight", "lm_head.weight", "transpose"])
 
         mappings = [StateDictNameMapping(*mapping, index=index) for index, mapping in enumerate(model_mappings)]
         return mappings
@@ -999,7 +929,7 @@ class GemmaPretrainedModel(PretrainedModel):
             final_actions = {}
 
             base_actions = {
-                "lm_head.weight": partial(fn, is_column=True),
+                # "lm_head.weight": partial(fn, is_column=True),
                 # Row Linear
                 "embed_tokens.weight": partial(fn, is_column=False),
                 "layers.0.self_attn.o_proj.weight": partial(fn, is_column=False),
@@ -1007,17 +937,15 @@ class GemmaPretrainedModel(PretrainedModel):
             }
 
             if not config.vocab_size % config.tensor_parallel_degree == 0:
-                base_actions.pop("lm_head.weight")
+                # base_actions.pop("lm_head.weight")
                 base_actions.pop("embed_tokens.weight")
             # Column Linear
-            if config.fuse_attention_qkv:
-                base_actions["layers.0.self_attn.qkv_proj.weight"] = partial(fn, is_column=True)
-            else:
-                base_actions["layers.0.self_attn.q_proj.weight"] = partial(fn, is_column=True)
-                # if we have enough num_key_value_heads to split, then split it.
-                if config.num_key_value_heads % config.tensor_parallel_degree == 0:
-                    base_actions["layers.0.self_attn.k_proj.weight"] = partial(fn, is_column=True)
-                    base_actions["layers.0.self_attn.v_proj.weight"] = partial(fn, is_column=True)
+
+            base_actions["layers.0.self_attn.q_proj.weight"] = partial(fn, is_column=True)
+            # if we have enough num_key_value_heads to split, then split it.
+            if config.num_key_value_heads % config.tensor_parallel_degree == 0:
+                base_actions["layers.0.self_attn.k_proj.weight"] = partial(fn, is_column=True)
+                base_actions["layers.0.self_attn.v_proj.weight"] = partial(fn, is_column=True)
 
             if config.fuse_attention_ffn:
                 base_actions["layers.0.mlp.gate_up_fused_proj.weight"] = partial(
@@ -1051,7 +979,6 @@ class GemmaPretrainedModel(PretrainedModel):
                 mpu.VocabParallelEmbedding,
                 mpu.ColumnParallelLinear,
                 mpu.RowParallelLinear,
-                GemmaLMHead,
                 ColumnSequenceParallelLinear,
                 RowSequenceParallelLinear,
             ),
@@ -1101,6 +1028,7 @@ class GemmaModel(GemmaPretrainedModel):
 
     def __init__(self, config: GemmaConfig):
         super().__init__(config)
+        # breakpoint()
         self.vocab_size = config.vocab_size
         self.hidden_size = config.hidden_size
         self.sequence_parallel = config.sequence_parallel
@@ -1115,11 +1043,13 @@ class GemmaModel(GemmaPretrainedModel):
                 self.hidden_size,
                 weight_attr=paddle.ParamAttr(initializer=nn.initializer.XavierNormal()),
             )
+            self.embed_tokens.weight.is_distributed = True
         else:
             self.embed_tokens = nn.Embedding(
                 self.vocab_size,
                 self.hidden_size,
             )
+            self.embed_tokens.weight.is_distributed = False
 
         self.layers = nn.LayerList(
             [GemmaDecoderLayer(config, i not in self.no_recompute_layers) for i in range(config.num_hidden_layers)]
@@ -1352,39 +1282,6 @@ class GemmaModel(GemmaPretrainedModel):
             cross_attentions=None,
         )
 
-class GemmaLMHead(nn.Layer):
-    def __init__(self, config: GemmaConfig):
-        super().__init__()
-        self.config = config
-        if config.tensor_parallel_degree > 1 and config.vocab_size % config.tensor_parallel_degree == 0:
-            vocab_size = config.vocab_size // config.tensor_parallel_degree
-        else:
-            vocab_size = config.vocab_size
-
-        self.weight = self.create_parameter(
-            shape=[config.hidden_size, vocab_size],
-            dtype=paddle.get_default_dtype(),
-        )
-        # Must set distributed attr for Tensor Parallel !
-        self.weight.is_distributed = True if (vocab_size != config.vocab_size) else False
-        if self.weight.is_distributed:
-            self.weight.split_axis = 1
-
-    def forward(self, hidden_states, tensor_parallel_output=None):
-        if self.config.sequence_parallel:
-            hidden_states = GatherOp.apply(hidden_states)
-            seq_length = self.config.seq_length
-            if self.config.sep_parallel_degree > 1:
-                assert seq_length % self.config.sep_parallel_degree == 0
-                seq_length = seq_length // self.config.sep_parallel_degree
-            hidden_states = paddle.reshape_(hidden_states, [-1, seq_length, self.config.hidden_size])
-
-        if tensor_parallel_output is None:
-            tensor_parallel_output = self.config.tensor_parallel_output
-
-        logits = parallel_matmul(hidden_states, self.weight, tensor_parallel_output=tensor_parallel_output)
-        return logits
-
 
 class GemmaPretrainingCriterion(nn.Layer):
     """
@@ -1455,7 +1352,6 @@ class GemmaForCausalLM(GemmaPretrainedModel):
         self.config = config
 
         self.gemma = GemmaModel(config)
-        self.lm_head = GemmaLMHead(config)
         self.criterion = GemmaPretrainingCriterion(config)
 
     def get_input_embeddings(self):
@@ -1463,12 +1359,6 @@ class GemmaForCausalLM(GemmaPretrainedModel):
 
     def set_input_embeddings(self, value):
         self.gemma.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.lm_head
-
-    def set_output_embeddings(self, new_embeddings):
-        self.lm_head = new_embeddings
 
     def set_decoder(self, decoder):
         self.gemma = decoder
@@ -1569,7 +1459,18 @@ class GemmaForCausalLM(GemmaPretrainedModel):
             self.config.tensor_parallel_output and labels is not None and self.config.tensor_parallel_degree > 1
         )
 
-        logits = self.lm_head(hidden_states, tensor_parallel_output=tensor_parallel_output)
+        if self.config.sequence_parallel:
+            hidden_states = GatherOp.apply(hidden_states)
+            seq_length = self.config.seq_length
+            if self.config.sep_parallel_degree > 1:
+                assert seq_length % self.config.sep_parallel_degree == 0
+                seq_length = seq_length // self.config.sep_parallel_degree
+            hidden_states = paddle.reshape_(hidden_states, [-1, seq_length, self.config.hidden_size])
+
+        if tensor_parallel_output is None:
+            tensor_parallel_output = self.config.tensor_parallel_output
+        
+        logits = parallel_matmul(hidden_states, self.gemma.embed_tokens.weight, tensor_parallel_output=tensor_parallel_output)
 
         loss = None
         if labels is not None:

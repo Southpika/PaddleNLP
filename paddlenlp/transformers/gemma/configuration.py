@@ -24,24 +24,24 @@ __all__ = [
 
 GEMMA_PRETRAINED_INIT_CONFIGURATION = {
     # Hypothetical model weights (tiny-random-llama & micro-random-llama) for test only
-    "google/gemma-7b": {
-        "architectures": ["GemmaForCausalLM"],
-        "hidden_size": 3072,
-        "initializer_range": 0.02,
-        "intermediate_size": 24576,
-        "max_position_embeddings": 8192,
-        "model_type": "gemma",
-        "num_attention_heads": 16,
-        "num_hidden_layers": 28,
-        "rms_norm_eps": 1e-06,
-        "vocab_size": 256000,
-        "bos_token_id": 2,
-        "eos_token_id": 1,
-        "pad_token_id": 0,
-        "use_cache": True,
-        "use_recompute": False,
-        "use_flash_attention": False,
-    },
+    # "google/gemma-7b": {
+    #     "architectures": ["GemmaForCausalLM"],
+    #     "hidden_size": 3072,
+    #     "initializer_range": 0.02,
+    #     "intermediate_size": 24576,
+    #     "max_position_embeddings": 8192,
+    #     "model_type": "gemma",
+    #     "num_attention_heads": 16,
+    #     "num_hidden_layers": 28,
+    #     "rms_norm_eps": 1e-06,
+    #     "vocab_size": 256000,
+    #     "bos_token_id": 2,
+    #     "eos_token_id": 1,
+    #     "pad_token_id": 0,
+    #     "use_cache": True,
+    #     "use_recompute": False,
+    #     "use_flash_attention": False,
+    # },
 }
 
 # Hypothetical model weights (tiny-random-llama) for test only
@@ -176,11 +176,11 @@ class GemmaConfig(PretrainedConfig):
         self.alibi = alibi
         self.pp_recompute_interval = pp_recompute_interval
         self.no_recompute_layers = no_recompute_layers
-        self.use_flash_attention = use_flash_attention,
-        self.use_fused_rms_norm = use_fused_rms_norm,
-        self.virtual_pp_degree = virtual_pp_degree,
-        self.rope_scaling_factor = rope_scaling_factor,
-        self.rope_scaling_type = rope_scaling_type,
+        self.use_flash_attention = use_flash_attention
+        self.use_fused_rms_norm = use_fused_rms_norm
+        self.virtual_pp_degree = virtual_pp_degree
+        self.rope_scaling_factor = rope_scaling_factor
+        self.rope_scaling_type = rope_scaling_type
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
