@@ -35,7 +35,12 @@ from utils import (
 )
 
 from paddlenlp.data import DataCollatorForSeq2Seq
-from paddlenlp.datasets import InTokensIterableDataset, InTokensMapDataset, load_dataset
+from paddlenlp.datasets import (
+    InTokensIterableDataset,
+    InTokensMapDataset,
+    MapDataset,
+    load_dataset,
+)
 from paddlenlp.metrics import BLEU, Rouge1, Rouge2, RougeL
 from paddlenlp.peft import LoRAConfig, LoRAModel, PrefixConfig, PrefixModelForCausalLM
 from paddlenlp.trainer import PdArgumentParser, get_last_checkpoint
@@ -50,10 +55,15 @@ from paddlenlp.utils.log import logger
 
 
 def read_local_dataset(path):
+    data = []
     with open(path, "r", encoding="utf-8") as fp:
         for line in fp:
-            yield json.loads(line.strip())
+            data.append(json.loads(line.strip()))
+    return MapDataset(data[:10000])
+
+
 import paddle.distributed.launch
+
 
 def main():
     # Arguments
@@ -64,6 +74,7 @@ def main():
         gen_args, quant_args, model_args, data_args, training_args = parser.parse_json_file_and_cmd_lines()
     else:
         gen_args, quant_args, model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    # breakpoint()
     training_args.print_config(model_args, "Model")
     training_args.print_config(data_args, "Data")
     training_args.print_config(quant_args, "Quant")
@@ -112,6 +123,7 @@ def main():
         weight_double_quant=model_args.weight_double_quant,
         weight_double_quant_block_size=model_args.weight_double_quant_block_size,
     )
+    # breakpoint()
     if training_args.pipeline_parallel_degree > 1:
         if data_args.eval_with_do_generation and training_args.do_eval:
             raise ValueError("Plese set eval_with_do_generation to false in pipeline parallel mode.")
@@ -200,19 +212,21 @@ def main():
         or os.path.exists(os.path.join(data_args.dataset_name_or_path, "quant.json"))
     ):
         if training_args.do_train or quant_args.do_qat:
-            train_ds = load_dataset(
-                "json",
-                data_files=os.path.join(data_args.dataset_name_or_path, "train.json"),
-                lazy=data_args.lazy,
-            )[0]
+            # train_ds = load_dataset(
+            #     "json",
+            #     data_files=os.path.join(data_args.dataset_name_or_path, "train.json"),
+            #     lazy=data_args.lazy,
+            # )[0]
+            train_ds = read_local_dataset(os.path.join(data_args.dataset_name_or_path, "train.json"))
         else:
             train_ds = None
         if training_args.do_eval:
-            dev_ds = load_dataset(
-                "json",
-                data_files=os.path.join(data_args.dataset_name_or_path, "dev.json"),
-                lazy=data_args.lazy,
-            )[0]
+            # dev_ds = load_dataset(
+            #     "json",
+            #     data_files=os.path.join(data_args.dataset_name_or_path, "dev.json"),
+            #     lazy=data_args.lazy,
+            # )[0]
+            dev_ds = read_local_dataset(os.path.join(data_args.dataset_name_or_path, "dev.json"))
         else:
             dev_ds = None
         if quant_args.do_ptq or quant_args.do_gptq:
@@ -424,6 +438,7 @@ def main():
             model = LoRAModel.from_pretrained(model=model, lora_path=model_args.lora_path)
         model.mark_only_lora_as_trainable()
         model.print_trainable_parameters()
+        breakpoint()
 
     def compute_metrics_do_generation(eval_preds):
         rouge1 = Rouge1()
@@ -498,6 +513,7 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
+        checkpoint = None
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         if model_args.neftune:
             neft_post_hook_handle.remove()

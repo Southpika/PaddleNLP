@@ -15,22 +15,18 @@
 
 import math
 import warnings
+from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import paddle
-import paddle.nn.functional as F
-from functools import partial
-from paddle import Tensor, nn
-from paddle.utils import try_import
-
 import paddle.distributed.fleet.meta_parallel as mpu
-
+import paddle.nn.functional as F
+from paddle import Tensor, nn
 from paddle.autograd import PyLayer
 from paddle.distributed import fleet
-import paddle.distributed.fleet.meta_parallel as mpu
 from paddle.distributed.fleet.meta_parallel import get_rng_state_tracker
 from paddle.distributed.fleet.utils import recompute
-
+from paddle.utils import try_import
 
 try:
     from paddle.incubate.nn.functional import fused_rotary_position_embedding
@@ -69,6 +65,7 @@ try:
     from paddle.nn.functional.flash_attention import flash_attention
 except:
     flash_attention = None
+
 
 def _get_interleave(n):
     def _get_interleave_power_of_2(n):
@@ -177,7 +174,7 @@ def parallel_matmul(x: Tensor, y: paddle.base.framework.EagerParamBase, tensor_p
     if is_fleet_init and tensor_parallel_degree > 1 and y_is_distributed:
         # if not running under distributed.launch, it will raise AttributeError: 'Fleet' object has no attribute '_hcg'
         input_parallel = paddle.distributed.collective._c_identity(x, group=model_parallel_group)
-        logits = paddle.matmul(input_parallel, y.transpose([1,0]), transpose_y=False)
+        logits = paddle.matmul(input_parallel, y, transpose_y=False)
 
         if tensor_parallel_output:
             return logits
@@ -185,7 +182,7 @@ def parallel_matmul(x: Tensor, y: paddle.base.framework.EagerParamBase, tensor_p
         return paddle.distributed.collective._c_concat(logits, group=model_parallel_group)
 
     else:
-        logits = paddle.matmul(x, y.transpose([1,0]), transpose_y=False)
+        logits = paddle.matmul(x, y, transpose_y=False)
         return logits
 
 
@@ -259,8 +256,8 @@ def scaled_dot_product_attention(
         # merge with the next tranpose
         key_states = paddle.transpose(key_states, [0, 2, 1, 3])
         value_states = paddle.transpose(value_states, [0, 2, 1, 3])
-        
-        
+
+        # breakpoint()
         # matmul and devide by sqrt(head_dim)
         attn_weights = paddle.matmul(query_states / math.sqrt(head_dim), key_states.transpose([0, 1, 3, 2]))
         # then add alibi bias
@@ -377,6 +374,7 @@ class GemmaRMSNorm(nn.Layer):
         output = self._norm(x.astype(paddle.float32)).astype(x.dtype)
         return output * (self.weight + 1)
 
+
 class GemmaRotaryEmbedding(nn.Layer):
     def __init__(self, dim, max_position_embeddings=2048, base=10000):
         super().__init__()
@@ -384,23 +382,22 @@ class GemmaRotaryEmbedding(nn.Layer):
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
         self.base = base
-        self.inv_freq =  1.0 / (self.base ** (paddle.cast(paddle.arange(0, self.dim, 2), dtype="float32") / self.dim))
+        self.inv_freq = 1.0 / (self.base ** (paddle.cast(paddle.arange(0, self.dim, 2), dtype="float32") / self.dim))
 
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         t = paddle.arange(seq_len, dtype="float32")
         freqs = paddle.einsum("i,j->ij", t, self.inv_freq)
         emb = paddle.concat([freqs, freqs], axis=-1)
-        return (
-            emb.cos()[None, :, None, :].cast(dtype=x.dtype),
-            emb.sin()[None, :, None, :].cast(dtype=x.dtype)
-            )
+        return (emb.cos()[None, :, None, :].cast(dtype=x.dtype), emb.sin()[None, :, None, :].cast(dtype=x.dtype))
+
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return paddle.concat([-x2, x1], axis=-1)  # shape is the same as x
+
 
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
 
@@ -416,6 +413,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
+
 
 class GemmaMLP(nn.Layer):
     def __init__(self, config):
@@ -455,11 +453,11 @@ class GemmaMLP(nn.Layer):
             self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias_attr=False)
             self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias_attr=False)
 
-
     def forward(self, x):
         # GeGLU
         out = self.down_proj(F.gelu(self.gate_proj(x)) * self.up_proj(x))
         return out
+
 
 class GemmaAttention(nn.Layer):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -469,7 +467,7 @@ class GemmaAttention(nn.Layer):
         super().__init__()
 
         self.config = config
-        self.attention_dropout = config.attention_dropout # add
+        self.attention_dropout = config.attention_dropout  # add
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = config.head_dim
@@ -478,7 +476,7 @@ class GemmaAttention(nn.Layer):
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
 
         self.max_position_embeddings = config.max_position_embeddings
-        self.seq_length = config.seq_length 
+        self.seq_length = config.seq_length
         self.rope_theta = config.rope_theta
         self.sequence_parallel = config.sequence_parallel
 
@@ -525,7 +523,7 @@ class GemmaAttention(nn.Layer):
         if config.tensor_parallel_degree > 1:
             self.q_proj = ColumnParallelLinear(
                 self.hidden_size,
-                self.num_heads * self.head_dim,
+                self.config.num_attention_heads * self.head_dim,
                 has_bias=config.attention_bias,
                 gather_output=False,
             )
@@ -558,7 +556,7 @@ class GemmaAttention(nn.Layer):
         else:
             self.q_proj = nn.Linear(
                 self.hidden_size,
-                self.num_heads * self.head_dim,
+                self.config.num_attention_heads * self.head_dim,
                 bias_attr=False,
             )
             self.k_proj = nn.Linear(
@@ -574,14 +572,14 @@ class GemmaAttention(nn.Layer):
 
         if config.tensor_parallel_degree > 1:
             self.o_proj = RowParallelLinear(
-                self.hidden_size,
+                self.config.num_attention_heads * self.head_dim,
                 self.hidden_size,
                 has_bias=False,
                 input_is_parallel=True,
             )
         else:
             self.o_proj = nn.Linear(
-                self.num_heads * self.head_dim,
+                self.config.num_attention_heads * self.head_dim,
                 self.hidden_size,
                 bias_attr=False,
             )
@@ -598,6 +596,7 @@ class GemmaAttention(nn.Layer):
             self.reshard_layer = ReshardLayer()
 
         self.config = config
+        # breakpoint()
 
     def forward(
         self,
@@ -660,7 +659,7 @@ class GemmaAttention(nn.Layer):
             query_states = query_states.reshape(shape=target_query_shape)
             key_states = key_states.reshape(shape=target_key_value_shape)
             value_states = value_states.reshape(shape=target_key_value_shape)
-
+        # breakpoint()
         kv_seq_len = key_states.shape[-3]
 
         if past_key_value is not None:
@@ -683,7 +682,6 @@ class GemmaAttention(nn.Layer):
                     use_neox_rotary_style=False,
                 )
             else:
-                # breakpoint()
                 cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
                 query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -698,11 +696,13 @@ class GemmaAttention(nn.Layer):
         if self.kv_indices is not None:
             key_states = paddle.index_select(key_states, self.kv_indices, axis=2)
             value_states = paddle.index_select(value_states, self.kv_indices, axis=2)
-
-        # TODO(wj-Mcat): use broadcast strategy when n_kv_heads = 1
-        # repeat k/v heads if n_kv_heads < n_heads
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
+            key_states = paddle.broadcast_to(key_states, query_states.shape)
+            value_states = paddle.broadcast_to(value_states, query_states.shape)
+        else:
+            # repeat k/v heads if n_kv_heads < n_heads
+            key_states = repeat_kv(key_states, self.num_key_value_groups)
+            value_states = repeat_kv(value_states, self.num_key_value_groups)
+            # breakpoint()
 
         has_gradient = not (query_states.stop_gradient and key_states.stop_gradient and value_states.stop_gradient)
         if (
@@ -880,7 +880,7 @@ class GemmaPretrainedModel(PretrainedModel):
     pretrained_init_configuration = GEMMA_PRETRAINED_INIT_CONFIGURATION
     pretrained_resource_files_map = GEMMA_PRETRAINED_RESOURCE_FILES_MAP
     _keys_to_ignore_on_load_unexpected = []
-    _keep_in_fp32_modules = ["inv_freq", "rotary_emb",  "cos_cached", "sin_cached"]
+    _keep_in_fp32_modules = ["inv_freq", "rotary_emb", "cos_cached", "sin_cached"]
 
     @classmethod
     def _get_name_mappings(cls, config: GemmaConfig) -> list[StateDictNameMapping]:
@@ -908,7 +908,7 @@ class GemmaPretrainedModel(PretrainedModel):
             for mapping in model_mappings:
                 mapping[0] = "model." + mapping[0]
                 mapping[1] = "gemma." + mapping[1]
-            # model_mappings.append(["lm_head.weight", "lm_head.weight", "transpose"])
+            model_mappings.append(["lm_head.weight", "lm_head.weight", "transpose"])
 
         mappings = [StateDictNameMapping(*mapping, index=index) for index, mapping in enumerate(model_mappings)]
         return mappings
@@ -929,7 +929,8 @@ class GemmaPretrainedModel(PretrainedModel):
             final_actions = {}
 
             base_actions = {
-                # "lm_head.weight": partial(fn, is_column=True),
+                # Column Linear
+                "lm_head.weight": partial(fn, is_column=True),
                 # Row Linear
                 "embed_tokens.weight": partial(fn, is_column=False),
                 "layers.0.self_attn.o_proj.weight": partial(fn, is_column=False),
@@ -937,9 +938,8 @@ class GemmaPretrainedModel(PretrainedModel):
             }
 
             if not config.vocab_size % config.tensor_parallel_degree == 0:
-                # base_actions.pop("lm_head.weight")
+                base_actions.pop("lm_head.weight")
                 base_actions.pop("embed_tokens.weight")
-            # Column Linear
 
             base_actions["layers.0.self_attn.q_proj.weight"] = partial(fn, is_column=True)
             # if we have enough num_key_value_heads to split, then split it.
@@ -1017,6 +1017,7 @@ class GemmaPretrainedModel(PretrainedModel):
             if isinstance(layer, GemmaAttention):
                 factor = 1 / math.sqrt(2 * self.config.num_hidden_layers)
                 layer.o_proj.weight.scale_(factor)
+
 
 @register_base_model
 class GemmaModel(GemmaPretrainedModel):
@@ -1176,7 +1177,6 @@ class GemmaModel(GemmaPretrainedModel):
         if position_ids is None:
             position_ids = paddle.arange(seq_length, dtype="int64").expand((batch_size, seq_length))
 
-
         if attention_mask is None:
             # [bs, seq_len]
             attention_mask = paddle.ones((batch_size, seq_length_with_past), dtype=paddle.bool)
@@ -1322,7 +1322,6 @@ class GemmaPretrainingCriterion(nn.Layer):
         return loss
 
 
-
 class ConcatSePMaskedLoss(PyLayer):
     @staticmethod
     def forward(ctx, inp, axis, group):
@@ -1344,13 +1343,48 @@ class ConcatSePMaskedLoss(PyLayer):
         return grad
 
 
+class GemmaLMHead(nn.Layer):
+    def __init__(self, config: GemmaConfig):
+        super().__init__()
+        self.config = config
+        if config.tensor_parallel_degree > 1 and config.vocab_size % config.tensor_parallel_degree == 0:
+            vocab_size = config.vocab_size // config.tensor_parallel_degree
+        else:
+            vocab_size = config.vocab_size
+
+        self.weight = self.create_parameter(
+            shape=[config.hidden_size, vocab_size],
+            dtype=paddle.get_default_dtype(),
+        )
+        # breakpoint()
+        # Must set distributed attr for Tensor Parallel !
+        self.weight.is_distributed = True if (vocab_size != config.vocab_size) else False
+        if self.weight.is_distributed:
+            self.weight.split_axis = 1
+
+    def forward(self, hidden_states, tensor_parallel_output=None):
+        if self.config.sequence_parallel:
+            hidden_states = GatherOp.apply(hidden_states)
+            seq_length = self.config.seq_length
+            if self.config.sep_parallel_degree > 1:
+                assert seq_length % self.config.sep_parallel_degree == 0
+                seq_length = seq_length // self.config.sep_parallel_degree
+            hidden_states = paddle.reshape_(hidden_states, [-1, seq_length, self.config.hidden_size])
+
+        if tensor_parallel_output is None:
+            tensor_parallel_output = self.config.tensor_parallel_output
+
+        logits = parallel_matmul(hidden_states, self.weight, tensor_parallel_output=tensor_parallel_output)
+        return logits
+
+
 class GemmaForCausalLM(GemmaPretrainedModel):
     enable_to_static_method = True
 
     def __init__(self, config):
         super().__init__(config)
         self.config = config
-
+        self.lm_head = self.lm_head = GemmaLMHead(config)
         self.gemma = GemmaModel(config)
         self.criterion = GemmaPretrainingCriterion(config)
 
@@ -1459,18 +1493,7 @@ class GemmaForCausalLM(GemmaPretrainedModel):
             self.config.tensor_parallel_output and labels is not None and self.config.tensor_parallel_degree > 1
         )
 
-        if self.config.sequence_parallel:
-            hidden_states = GatherOp.apply(hidden_states)
-            seq_length = self.config.seq_length
-            if self.config.sep_parallel_degree > 1:
-                assert seq_length % self.config.sep_parallel_degree == 0
-                seq_length = seq_length // self.config.sep_parallel_degree
-            hidden_states = paddle.reshape_(hidden_states, [-1, seq_length, self.config.hidden_size])
-
-        if tensor_parallel_output is None:
-            tensor_parallel_output = self.config.tensor_parallel_output
-        
-        logits = parallel_matmul(hidden_states, self.gemma.embed_tokens.weight, tensor_parallel_output=tensor_parallel_output)
+        logits = self.lm_head(hidden_states, tensor_parallel_output=tensor_parallel_output)
 
         loss = None
         if labels is not None:
