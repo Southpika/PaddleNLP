@@ -17,3 +17,14 @@ librosa
 numpy==1.23.5
 rouge
 tiktoken
+visualdl
+wandb
+tensorboard
+modelscope
+hyperopt
+h5py
+deploy
+ray
+loguru
+data
+wget
