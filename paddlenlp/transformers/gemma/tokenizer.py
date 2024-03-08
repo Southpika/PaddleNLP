@@ -35,7 +35,8 @@ class GemmaTokenizer(PretrainedTokenizer):
     resource_files_names = VOCAB_FILES_NAMES
     pretrained_resource_files_map = {
         "vocab_file": {
-            "google/gemma-7b": "fake/tokenizer.model",
+            "google/gemma-2b": "https://bj.bcebos.com/paddlenlp/models/community/google/gemma-2b/tokenizer.model",
+            "google/gemma-7b": "https://bj.bcebos.com/paddlenlp/models/community/google/gemma-7b/tokenizer.model",
         },
     }
 

@@ -68,6 +68,16 @@ class GemmaFastTokenizer(PretrainedFastTokenizer):
 
     vocab_files_names = VOCAB_FILES_NAMES
     slow_tokenizer_class = GemmaTokenizer
+    pretrained_resource_files_map = slow_tokenizer_class.pretrained_resource_files_map
+    pretrained_resource_files_map.update(
+        {
+            "tokenizer_file": {
+                "google/gemma-2b": "https://bj.bcebos.com/paddlenlp/models/community/google/gemma-2b/tokenizer.json",
+                "google/gemma-7b": "https://bj.bcebos.com/paddlenlp/models/community/google/gemma-7b/tokenizer.json",
+            },
+        }
+    )
+    pretrained_init_configuration = slow_tokenizer_class.pretrained_init_configuration
     padding_side = "left"
     model_input_names = ["input_ids", "attention_mask"]
 
