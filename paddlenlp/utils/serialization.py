@@ -249,5 +249,4 @@ def load_torch(path: str, **pickle_load_args):
             else:
                 arr = paddle.to_tensor(np.frombuffer(v["data"], dtype=dtype).reshape(v["shape"]))
             state_dict[k] = arr
-        breakpoint()
     return state_dict

@@ -59,7 +59,7 @@ def read_local_dataset(path):
     with open(path, "r", encoding="utf-8") as fp:
         for line in fp:
             data.append(json.loads(line.strip()))
-    return MapDataset(data[:10000])
+    return MapDataset(data[:1000])
 
 
 import paddle.distributed.launch
@@ -153,6 +153,7 @@ def main():
             )
             model = AutoModelForCausalLMPipe.from_config(model_config, dtype=dtype)
     else:
+        # breakpoint()
         model_config = AutoConfig.from_pretrained(
             model_args.model_name_or_path,
             tensor_parallel_output=False,
@@ -443,7 +444,6 @@ def main():
         else:
             model = LoRAModel.from_pretrained(model=model, lora_path=model_args.lora_path)
         model.print_trainable_parameters()
-        breakpoint()
 
     def compute_metrics_do_generation(eval_preds):
         rouge1 = Rouge1()
@@ -620,18 +620,19 @@ def main():
         trainer.save_model(merge_tensor_parallel=training_args.tensor_parallel_degree > 1)
 
     # Evaluation dev set
-    if training_args.do_eval:
-        eval_result = trainer.evaluate(dev_ds)
-        trainer.log_metrics("eval", eval_result)
+    # if training_args.do_eval:
+    #     eval_result = trainer.evaluate(dev_ds)
+    #     # breakpoint()
+    #     trainer.log_metrics("eval", eval_result)
 
     # Evaluation test set
     if training_args.do_predict:
-        test_ds = load_dataset(
-            "json",
-            data_files=os.path.join(data_args.dataset_name_or_path, "test.json"),
-            lazy=data_args.lazy,
-        )[0]
-
+        # test_ds = load_dataset(
+        #     "json",
+        #     data_files=os.path.join(data_args.dataset_name_or_path, "eval.json"),
+        #     lazy=data_args.lazy,
+        # )[0]
+        test_ds = read_local_dataset(os.path.join(data_args.dataset_name_or_path, "test.json"))
         test_ds = test_ds.map(partial(trans_func, is_test=data_args.eval_with_do_generation))
         if eval_intokens:
             test_ds = intoken_dataset(
@@ -639,7 +640,8 @@ def main():
                 tokenizer=tokenizer,
                 max_length=data_args.max_length,
             )
-        eval_result = trainer.predict(test_ds).metrics
+        eval_result = trainer.predict(test_ds)
+        breakpoint()
         trainer.log_metrics("test", eval_result)
 
 

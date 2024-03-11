@@ -1044,7 +1044,7 @@ class ConversionMixin:
         else:
             state_dict = load_torch(weight_file)
         # 3. convert state_dict
-        breakpoint()
+        # breakpoint()
         all_layer_names = set(state_dict.keys())
         for name_mapping in name_mappings:
             if name_mapping.source_name not in state_dict:
@@ -1054,7 +1054,7 @@ class ConversionMixin:
             state_dict[name_mapping.target_name] = name_mapping.run(state_dict, name_mapping.source_name)
             if name_mapping.source_name in all_layer_names:
                 all_layer_names.remove(name_mapping.source_name)
-        breakpoint()
+        # breakpoint()
         if all_layer_names:
             logger.warning(f"there are {len(all_layer_names)} tensors not initialized:")
             for layer_name in all_layer_names:

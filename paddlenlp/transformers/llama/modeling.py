@@ -545,10 +545,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
         cos = cos[:, : q.shape[1], :, :]  # [bs, seq_len, 1, dim]
         sin = sin[:, : q.shape[1], :, :]  # [bs, seq_len, 1, dim]
     else:
-        print(cos.shape)
         cos = cos.squeeze(axis=[0, 2])  # [seq_len, dim]
-        print(cos.shape)
-        breakpoint()
         sin = sin.squeeze(axis=[0, 2])  # [seq_len, dim]
         cos = cos[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
         sin = sin[position_ids].unsqueeze(2)  # [bs, seq_len, 1, dim]
@@ -974,7 +971,6 @@ class LlamaAttention(nn.Layer):
                             use_neox_rotary_style=False,
                         )
             else:
-                breakpoint()
                 cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
                 query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
