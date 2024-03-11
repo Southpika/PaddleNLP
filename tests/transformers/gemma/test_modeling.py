@@ -1,5 +1,5 @@
-# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
-# Copyright 2024 The HuggingFace Team. All rights reserved.
+# Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
+# Copyright 2020 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import numpy as np
 import paddle
 from parameterized import parameterized
 
-from paddlenlp.transformers import LlamaConfig, LlamaForCausalLM, LlamaModel
+from paddlenlp.transformers import GemmaConfig, GemmaForCausalLM, GemmaModel
 from tests.testing_utils import require_package, slow
 from tests.transformers.test_configuration_common import ConfigTester
 from tests.transformers.test_generation_utils import GenerationTesterMixin
@@ -34,7 +34,7 @@ from tests.transformers.test_modeling_common import (
 )
 
 
-class LlamaModelTester:
+class GemmaModelTester:
     def __init__(
         self,
         parent,
@@ -42,19 +42,19 @@ class LlamaModelTester:
         hidden_size=64,
         num_hidden_layers=2,
         num_attention_heads=8,
-        masked_softmax_fusion=True,
         layer_norm_epsilon=1e-5,
         initializer_range=0.02,
         is_training=True,
         use_cache=False,
-        bos_token_id=1,
-        eos_token_id=2,
+        bos_token_id=2,
+        eos_token_id=1,
+        pad_token_id=0,
         apply_residual_connection_post_layernorm=False,
         hidden_dropout=0.0,
         attention_dropout=0.0,
         attention_softmax_in_fp32=True,
-        pretraining_tp=1,  # TP rank used when training with megatron
-        dtype="bfloat16",
+        pretraining_tp=1,
+        dtype="float16",
         slow_but_exact=False,
         batch_size: int = 2,
         seq_length: int = 10,
@@ -63,23 +63,23 @@ class LlamaModelTester:
         num_labels=3,
         num_choices=4,
         scope=None,
-        dropout=0.56,
+        dropout=0.00,
         use_input_mask: bool = False,
         use_labels: bool = False,
         return_dict=False,
     ):
-        self.parent: LlamaModelTest = parent
+        self.parent: GemmaModelTest = parent
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
-        self.masked_softmax_fusion = masked_softmax_fusion
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_range = initializer_range
         self.is_training = is_training
         self.use_cache = use_cache
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
+        self.pad_token_id = pad_token_id
         self.apply_residual_connection_post_layernorm = apply_residual_connection_post_layernorm
         self.hidden_dropout = hidden_dropout
         self.attention_dropout = attention_dropout
@@ -119,13 +119,12 @@ class LlamaModelTester:
         config = self.get_config()
         return config, input_ids, input_mask, sequence_labels, token_labels, choice_labels
 
-    def get_config(self) -> LlamaConfig:
-        return LlamaConfig(
+    def get_config(self) -> GemmaConfig:
+        return GemmaConfig(
             vocab_size=self.vocab_size,
             hidden_size=self.hidden_size,
             num_hidden_layers=self.num_hidden_layers,
             num_attention_heads=self.num_attention_heads,
-            masked_softmax_fusion=self.masked_softmax_fusion,
             layer_norm_epsilon=self.layer_norm_epsilon,
             initializer_range=self.initializer_range,
             use_cache=self.use_cache,
@@ -142,17 +141,17 @@ class LlamaModelTester:
         )
 
     def create_and_check_model(
-        self, config: LlamaConfig, input_ids, input_mask, sequence_labels, token_labels, choice_labels
+        self, config: GemmaConfig, input_ids, input_mask, sequence_labels, token_labels, choice_labels
     ):
-        model = LlamaModel(config)
+        model = GemmaModel(config)
         model.eval()
         result = model(input_ids)
         self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.hidden_size])
 
     def create_and_check_model_attention_mask(
-        self, config: LlamaConfig, input_ids, input_mask, sequence_labels, token_labels, choice_labels
+        self, config: GemmaConfig, input_ids, input_mask, sequence_labels, token_labels, choice_labels
     ):
-        model = LlamaModel(config)
+        model = GemmaModel(config)
         model.eval()
         attn_mask_2d = random_attention_mask([self.batch_size, self.seq_length])
         result_2d = model(input_ids, attention_mask=attn_mask_2d)[0]
@@ -170,14 +169,14 @@ class LlamaModelTester:
 
     def create_and_check_model_past_large_inputs(
         self,
-        config: LlamaConfig,
+        config: GemmaConfig,
         input_ids,
         input_mask,
         sequence_labels,
         token_labels,
         choice_labels,
     ):
-        model = LlamaModel(config)
+        model = GemmaModel(config)
         model.eval()
 
         # first forward pass
@@ -232,7 +231,7 @@ class LlamaModelTester:
         return config, inputs_dict
 
     def create_and_check_lm_head_model(self, config, input_ids, input_mask, *args):
-        model = LlamaForCausalLM(config)
+        model = GemmaForCausalLM(config)
         model.eval()
 
         result = model(
@@ -248,7 +247,7 @@ class LlamaModelTester:
             self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.vocab_size])
 
     def check_model_position_ids(self, config, input_ids, input_mask, *args):
-        model = LlamaForCausalLM(config)
+        model = GemmaForCausalLM(config)
         model.eval()
 
         result_no_position_id = model(
@@ -270,7 +269,7 @@ class LlamaModelTester:
             self.parent.assertTrue((result_position_id[0] == result_no_position_id[0]).all())
 
     def create_and_check_gqa_model(self, config, input_ids, input_mask, *args):
-        model = LlamaForCausalLM(config)
+        model = GemmaForCausalLM(config)
         config.num_key_value_heads = 8  # gqa
         config.use_fused_rope = True
         model.eval()
@@ -288,19 +287,19 @@ class LlamaModelTester:
             self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.vocab_size])
 
 
-class LlamaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
-    base_model_class = LlamaModel
+class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
+    base_model_class = GemmaModel
     return_dict = False
     use_labels = False
 
-    all_model_classes = (LlamaModel, LlamaForCausalLM)
-    all_generative_model_classes = {LlamaForCausalLM: (LlamaModel, "llama")}
+    all_model_classes = (GemmaModel, GemmaForCausalLM)
+    all_generative_model_classes = {GemmaForCausalLM: (GemmaModel, "gemma")}
 
     def setUp(self):
         super().setUp()
 
-        self.model_tester = LlamaModelTester(self)
-        self.config_tester = ConfigTester(self, config_class=LlamaConfig, vocab_size=256, hidden_size=24)
+        self.model_tester = GemmaModelTester(self)
+        self.config_tester = ConfigTester(self, config_class=GemmaConfig, vocab_size=256, hidden_size=24)
 
     def _get_input_ids_and_config(self):
         config, inputs_dict = self.model_tester.prepare_config_and_inputs_for_common()
@@ -342,11 +341,11 @@ class LlamaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase)
 
 
 class LlamaModelIntegrationTest(ModelTesterPretrainedMixin, unittest.TestCase):
-    base_model_class = LlamaModel
+    base_model_class = GemmaModel
 
     @slow
     def test_inference_no_attention(self):
-        model = LlamaModel.from_pretrained("__internal_testing__/tiny-random-llama")
+        model = GemmaModel.from_pretrained("google/gemma-2b")
         model.eval()
         input_ids = paddle.to_tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = paddle.to_tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
@@ -369,7 +368,7 @@ class LlamaModelIntegrationTest(ModelTesterPretrainedMixin, unittest.TestCase):
 
     @slow
     def test_inference_with_attention(self):
-        model = LlamaModel.from_pretrained("__internal_testing__/tiny-random-llama")
+        model = GemmaModel.from_pretrained("google/gemma-2b")
         model.eval()
         input_ids = paddle.to_tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
         attention_mask = paddle.to_tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
@@ -389,121 +388,6 @@ class LlamaModelIntegrationTest(ModelTesterPretrainedMixin, unittest.TestCase):
             ]
         )
         self.assertTrue(paddle.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-4))
-
-
-class LlamaGenerationD2STest(GenerationD2STestMixin, unittest.TestCase):
-    internal_testing_model = "__internal_testing__/micro-random-llama"
-
-
-class LlamaCompatibilityTest(unittest.TestCase):
-    test_model_id = "hf-internal-testing/tiny-random-LlamaModel"
-
-    @classmethod
-    @require_package("transformers", "torch")
-    def setUpClass(cls) -> None:
-        from transformers import LlamaConfig, LlamaForCausalLM
-
-        # when python application is done, `TemporaryDirectory` will be free
-        cls.torch_model_path = tempfile.TemporaryDirectory().name
-        config = LlamaConfig(hidden_size=16, num_hidden_layers=1, num_attention_heads=2)
-        model = LlamaForCausalLM(config)
-        model.save_pretrained(cls.torch_model_path)
-
-    @require_package("transformers", "torch")
-    def test_llama_converter(self):
-        # 1. create commmon input
-        input_ids = np.random.randint(100, 200, [1, 20])
-
-        # 2. forward the paddle model
-        from paddlenlp.transformers import LlamaModel
-
-        paddle_model = LlamaModel.from_pretrained(self.torch_model_path, convert_from_torch=True)
-        paddle_model.eval()
-        paddle_logit = paddle_model(paddle.to_tensor(input_ids))[0]
-
-        # 3. forward the torch  model
-        import torch
-        from transformers import LlamaModel
-
-        torch_model = LlamaModel.from_pretrained(self.torch_model_path)
-        torch_model.eval()
-        torch_logit = torch_model(torch.tensor(input_ids), return_dict=False)[0]
-
-        self.assertTrue(
-            np.allclose(
-                paddle_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                torch_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                rtol=1e-2,
-            )
-        )
-
-    @require_package("transformers", "torch")
-    def test_llama_converter_from_local_dir(self):
-        with tempfile.TemporaryDirectory() as tempdir:
-
-            # 1. create commmon input
-            input_ids = np.random.randint(100, 200, [1, 20])
-
-            # 2. forward the torch  model
-            import torch
-            from transformers import LlamaModel
-
-            torch_model = LlamaModel.from_pretrained(self.torch_model_path)
-            torch_model.eval()
-            torch_model.save_pretrained(tempdir)
-            torch_logit = torch_model(torch.tensor(input_ids), return_dict=False)[0]
-
-            # 2. forward the paddle model
-            from paddlenlp.transformers import LlamaModel
-
-            paddle_model = LlamaModel.from_pretrained(tempdir, convert_from_torch=True)
-            paddle_model.eval()
-            paddle_logit = paddle_model(paddle.to_tensor(input_ids))[0]
-
-            self.assertTrue(
-                np.allclose(
-                    paddle_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                    torch_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                    rtol=1e-2,
-                )
-            )
-
-    @parameterized.expand([("LlamaModel",), ("LlamaForCausalLM",)])
-    @require_package("transformers", "torch")
-    def test_llama_classes_from_local_dir(self, class_name, pytorch_class_name: str | None = None):
-        pytorch_class_name = pytorch_class_name or class_name
-        with tempfile.TemporaryDirectory() as tempdir:
-
-            # 1. create commmon input
-            input_ids = np.random.randint(100, 200, [1, 20])
-
-            # 2. forward the torch model
-            import torch
-            import transformers
-
-            torch_model_class = getattr(transformers, pytorch_class_name)
-            torch_model = torch_model_class.from_pretrained(self.torch_model_path)
-            torch_model.eval()
-
-            torch_model.save_pretrained(tempdir)
-            torch_logit = torch_model(torch.tensor(input_ids), return_dict=False)[0]
-
-            # 3. forward the paddle model
-            from paddlenlp import transformers
-
-            paddle_model_class = getattr(transformers, class_name)
-            paddle_model = paddle_model_class.from_pretrained(tempdir, convert_from_torch=True)
-            paddle_model.eval()
-
-            paddle_logit = paddle_model(paddle.to_tensor(input_ids), return_dict=False)[0]
-
-            self.assertTrue(
-                np.allclose(
-                    paddle_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                    torch_logit.detach().cpu().reshape([-1])[:9].numpy(),
-                    atol=1e-3,
-                )
-            )
 
 
 if __name__ == "__main__":
