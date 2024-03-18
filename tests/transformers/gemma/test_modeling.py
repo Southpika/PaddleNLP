@@ -13,20 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
-import os
-import sys
-sys.path.append(os.path.dirname((os.path.dirname((os.path.dirname(os.path.dirname(__file__)))))))
 
 import unittest
+
 import paddle
 
 from paddlenlp.transformers import GemmaConfig, GemmaForCausalLM, GemmaModel
-from tests.testing_utils import slow
 from tests.transformers.test_configuration_common import ConfigTester
 from tests.transformers.test_generation_utils import GenerationTesterMixin
 from tests.transformers.test_modeling_common import (
     ModelTesterMixin,
-    ModelTesterPretrainedMixin,
     ids_tensor,
     random_attention_mask,
 )
@@ -292,6 +288,7 @@ class GemmaModelTester:
         result = model(input_ids)
         self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.vocab_size])
 
+
 class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
     base_model_class = GemmaModel
     return_dict = False
@@ -347,6 +344,7 @@ class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase)
     def test_gemma_mqa_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_mqa_model(*config_and_inputs)
+
 
 if __name__ == "__main__":
     unittest.main()
