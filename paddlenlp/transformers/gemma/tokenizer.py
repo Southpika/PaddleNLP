@@ -86,7 +86,6 @@ class GemmaTokenizer(PretrainedTokenizer):
             spaces_between_special_tokens=spaces_between_special_tokens,
             **kwargs,
         )
-        self._update_special_added_tokens_decoder()
 
     def __getstate__(self):
         state = self.__dict__.copy()
@@ -142,7 +141,6 @@ class GemmaTokenizer(PretrainedTokenizer):
         for ids in token_ids:
             if skip_special_tokens and ids in self.all_special_ids:
                 continue
-            breakpoint()
             if ids in self.added_tokens_decoder:
                 if current_sub_text:
                     sub_texts.append(self.sp_model.decode(current_sub_text))
@@ -151,6 +149,11 @@ class GemmaTokenizer(PretrainedTokenizer):
                     sub_texts.append(cur_id.content)
                 elif isinstance(cur_id, str):
                     sub_texts.append(cur_id)
+                current_sub_text = []
+            elif ids in self.all_special_ids:
+                if current_sub_text:
+                    sub_texts.append(self.sp_model.decode(current_sub_text))
+                sub_texts.append(self._convert_id_to_token(ids))
                 current_sub_text = []
             else:
                 current_sub_text.append(ids)
@@ -164,16 +167,6 @@ class GemmaTokenizer(PretrainedTokenizer):
 
         return sub_texts
 
-    def _update_special_added_tokens_decoder(self):
-        assert len(self.all_special_ids) == len(self.all_special_tokens_extended)
-        added_tok_encoder = dict(
-            (self.all_special_tokens_extended[i], self.all_special_ids[i])
-            for i in range(len(self.all_special_tokens_extended))
-        )
-        added_tok_decoder = {v: k for k, v in added_tok_encoder.items()}
-        self.added_tokens_encoder.update(added_tok_encoder)
-        self.added_tokens_decoder.update(added_tok_decoder)
-
     def convert_tokens_to_string(self, tokens):
         """Converts a sequence of tokens (string) in a single string."""
         current_sub_tokens = []
@@ -183,6 +176,8 @@ class GemmaTokenizer(PretrainedTokenizer):
             if token in self.added_tokens_encoder:
                 out_string += self.sp_model.decode(current_sub_tokens) + token
                 current_sub_tokens = []
+            elif token in self.all_special_tokens:
+                out_string += self.sp_model.decode(current_sub_tokens) + token
             else:
                 current_sub_tokens.append(token)
         out_string += self.sp_model.decode(current_sub_tokens)
