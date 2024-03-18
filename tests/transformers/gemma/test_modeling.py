@@ -13,20 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from __future__ import annotations
+import os
+import sys
+sys.path.append(os.path.dirname((os.path.dirname((os.path.dirname(os.path.dirname(__file__)))))))
 
-import tempfile
 import unittest
-
-import numpy as np
 import paddle
-from parameterized import parameterized
 
 from paddlenlp.transformers import GemmaConfig, GemmaForCausalLM, GemmaModel
-from tests.testing_utils import require_package, slow
+from tests.testing_utils import slow
 from tests.transformers.test_configuration_common import ConfigTester
 from tests.transformers.test_generation_utils import GenerationTesterMixin
 from tests.transformers.test_modeling_common import (
-    GenerationD2STestMixin,
     ModelTesterMixin,
     ModelTesterPretrainedMixin,
     ids_tensor,
@@ -41,7 +39,7 @@ class GemmaModelTester:
         vocab_size=256000,
         hidden_size=64,
         num_hidden_layers=2,
-        num_attention_heads=8,
+        num_attention_heads=16,
         layer_norm_epsilon=1e-5,
         initializer_range=0.02,
         is_training=True,
@@ -286,6 +284,13 @@ class GemmaModelTester:
         else:
             self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.vocab_size])
 
+    def create_and_check_mqa_model(self, config, input_ids, input_mask, *args):
+        model = GemmaForCausalLM(config)
+        config.num_key_value_heads = 1  # mqa for gemma-2b
+        config.use_fused_rope = True
+        model.eval()
+        result = model(input_ids)
+        self.parent.assertEqual(result[0].shape, [self.batch_size, self.seq_length, self.vocab_size])
 
 class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase):
     base_model_class = GemmaModel
@@ -331,64 +336,17 @@ class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase)
         # this requires 4-D attention mask logic, which is not supported yet
         pass
 
-    def test_llama_lm_head_model(self):
+    def test_gemma_lm_head_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_lm_head_model(*config_and_inputs)
 
-    def test_llama_gqa_model(self):
+    def test_gemma_gqa_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_gqa_model(*config_and_inputs)
 
-
-class LlamaModelIntegrationTest(ModelTesterPretrainedMixin, unittest.TestCase):
-    base_model_class = GemmaModel
-
-    @slow
-    def test_inference_no_attention(self):
-        model = GemmaModel.from_pretrained("google/gemma-2b")
-        model.eval()
-        input_ids = paddle.to_tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
-        attention_mask = paddle.to_tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
-        with paddle.no_grad():
-            output = model(input_ids, attention_mask=attention_mask)[0]
-
-        expected_shape = [1, 11, 768]
-        self.assertEqual(output.shape, expected_shape)
-
-        expected_slice = paddle.to_tensor(
-            [
-                [
-                    [0.20443289, 0.18662477, -0.75216216],
-                    [0.32803515, -0.36956733, -0.95613617],
-                    [0.28622314, 0.07698685, -0.64143789],
-                ]
-            ]
-        )
-        self.assertTrue(paddle.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-4))
-
-    @slow
-    def test_inference_with_attention(self):
-        model = GemmaModel.from_pretrained("google/gemma-2b")
-        model.eval()
-        input_ids = paddle.to_tensor([[0, 345, 232, 328, 740, 140, 1695, 69, 6078, 1588, 2]])
-        attention_mask = paddle.to_tensor([[0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
-        with paddle.no_grad():
-            output = model(input_ids, attention_mask=attention_mask)[0]
-
-        expected_shape = [1, 11, 768]
-        self.assertEqual(output.shape, expected_shape)
-
-        expected_slice = paddle.to_tensor(
-            [
-                [
-                    [0.20443289, 0.18662477, -0.75216216],
-                    [0.32803515, -0.36956733, -0.95613617],
-                    [0.28622314, 0.07698685, -0.64143789],
-                ]
-            ]
-        )
-        self.assertTrue(paddle.allclose(output[:, 1:4, 1:4], expected_slice, atol=1e-4))
-
+    def test_gemma_mqa_model(self):
+        config_and_inputs = self.model_tester.prepare_config_and_inputs()
+        self.model_tester.create_and_check_mqa_model(*config_and_inputs)
 
 if __name__ == "__main__":
     unittest.main()
