@@ -641,42 +641,58 @@ class ChatTemplateMixin:
         if not self.chat_template:
             raise ValueError("chat_template is not set, please set chat_template first.")
         elif isinstance(self.chat_template, Template):
-            if isinstance(conversation, str):
-                conversation = [{"role": "user", "content": conversation}]
-            elif isinstance(conversation, list):
-                for index, item in enumerate(conversation):
-                    if isinstance(item, dict):
-                        break
-                    elif isinstance(item, str):
-                        if index % 2 == 0:
-                            conversation[index] = {"role": "user", "content": item}
-                        else:
-                            conversation[index] = {"role": "assistant", "content": item}
-                    else:
-                        raise ValueError(
-                            "apply_chat_template do not support appling batch conversations, "
-                            "so you should apply the conversation one by one."
-                        )
-            query = self.chat_template.render(messages=conversation, **self.special_tokens_map)
-
+            query = self._apply_chat_template(conversation, context_data)
         elif isinstance(self.chat_template, ChatTemplate):
-            context_data = self.chat_template._init_context_data(context_data)
+            query = self._apply_chat_template_paddle(conversation, context_data)
 
-            if isinstance(conversation, str):
-                conversation = [[conversation]]
-            elif isinstance(conversation, list) and isinstance(conversation[0], str):
-                raise ValueError(
-                    "apply_chat_template do not support appling batch conversations, "
-                    "so you should apply the conversation one by one."
-                )
-
-            query = self.chat_template(conversation, context_data=context_data)
         if not tokenize:
             return query
 
         # chat_template should not add special tokens
         tokenizer_kwargs["add_special_tokens"] = False
         return self(query, **tokenizer_kwargs)
+
+    def _apply_chat_template_paddle(
+        self,
+        conversation: List[List[str, str]] | str,
+        context_data: Dict[str, Any] = {},
+    ) -> str | dict[str, numpy.ndarray | paddle.Tensor]:
+        context_data = self.chat_template._init_context_data(context_data)
+
+        if isinstance(conversation, str):
+            conversation = [[conversation]]
+        elif isinstance(conversation, list) and isinstance(conversation[0], str):
+            raise ValueError(
+                "apply_chat_template do not support appling batch conversations, "
+                "so you should apply the conversation one by one."
+            )
+
+        query = self.chat_template(conversation, context_data=context_data)
+        return query
+
+    def _apply_chat_template(
+        self,
+        conversation: List[List[str, str] | Dict[str, str]] | str,
+        context_data: Dict[str, Any] = {},
+    ) -> str | dict[str, numpy.ndarray | paddle.Tensor]:
+        if isinstance(conversation, str):
+            conversation = [{"role": "user", "content": conversation}]
+        elif isinstance(conversation, list):
+            for index, item in enumerate(conversation):
+                if isinstance(item, dict):
+                    break
+                elif isinstance(item, str):
+                    if index % 2 == 0:
+                        conversation[index] = {"role": "user", "content": item}
+                    else:
+                        conversation[index] = {"role": "assistant", "content": item}
+                else:
+                    raise ValueError(
+                        "apply_chat_template do not support appling batch conversations, "
+                        "so you should apply the conversation one by one."
+                    )
+        query = self.chat_template.render(messages=conversation, **self.special_tokens_map)
+        return query
 
     def encode_chat_inputs(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
         """Encodes conversation to pairs of token ids.
@@ -690,7 +706,41 @@ class ChatTemplateMixin:
         Returns:
             List[list[int], list[int]]: the pair of input_ids and target_ids
         """
+        if not self.chat_template:
+            raise ValueError("chat_template is not set, please set chat_template first.")
+        # elif isinstance(self.chat_template, Template):
+        #     query = self._apply_chat_template(conversations, context_data)
+        # elif isinstance(self.chat_template, ChatTemplate):
+        return self._encode_chat_inputs_paddle(conversations, context_data)
+
+    def _encode_chat_inputs_paddle(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
+        breakpoint()
         context_data = self.chat_template._init_context_data(context_data)
+        # encode system
+        result = {}
+        if self.chat_template.system:
+            system = self.chat_template.render_system(context_data)
+            result["system"] = self.encode(system, add_special_tokens=False)["input_ids"]
+
+        # encode conversation
+        conversation_ids = []
+        for index, conversation in enumerate(conversations):
+            # give more control to chat_template
+            context_data["is_first"] = index == 0
+            context_data["is_last"] = index == len(conversations) - 1
+
+            user_input, bot_output = self.chat_template.render_conversation(
+                conversation, index=index, context_data=context_data
+            )
+            user_ids = self.encode(user_input, add_special_tokens=False)["input_ids"]
+            bot_ids = self.encode(bot_output, add_special_tokens=False)["input_ids"]
+            conversation_ids.append([user_ids, bot_ids])
+
+        result["conversations"] = conversation_ids
+        return result
+
+    def _encode_chat_inputs(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
+        system_message = {}
         # encode system
         result = {}
         if self.chat_template.system:
