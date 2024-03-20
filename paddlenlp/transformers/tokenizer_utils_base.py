@@ -60,6 +60,7 @@ else:
         lstrip: bool = False
         rstrip: bool = False
         normalized: bool = True
+        special:bool = False
 
         def __getstate__(self):
             return self.__dict__
