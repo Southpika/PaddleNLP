@@ -641,7 +641,8 @@ class ChatTemplateMixin:
         if not self.chat_template:
             raise ValueError("chat_template is not set, please set chat_template first.")
         elif isinstance(self.chat_template, Template):
-            query = self._apply_chat_template(conversation, context_data)
+            add_generation_prompt = tokenizer_kwargs.pop("add_generation_prompt", True)
+            query = self._apply_chat_template(conversation, context_data, add_generation_prompt=add_generation_prompt)
         elif isinstance(self.chat_template, ChatTemplate):
             query = self._apply_chat_template_paddle(conversation, context_data)
 
@@ -674,27 +675,39 @@ class ChatTemplateMixin:
         self,
         conversation: List[List[str, str] | Dict[str, str]] | str,
         context_data: Dict[str, Any] = {},
+        add_generation_prompt=True,
     ) -> str | dict[str, numpy.ndarray | paddle.Tensor]:
         if isinstance(conversation, str):
-            conversation = [{"role": "user", "content": conversation}]
+            conversations = [{"role": "user", "content": conversation}]
         elif isinstance(conversation, list):
+            conversations = []
             for index, item in enumerate(conversation):
                 if isinstance(item, dict):
+                    conversations = conversation
                     break
-                elif isinstance(item, str):
-                    if index % 2 == 0:
-                        conversation[index] = {"role": "user", "content": item}
+                elif isinstance(item, list):
+                    assert 1 <= len(item) <= 2
+                    if isinstance(item[0], str):
+                        conversations.append({"role": "user", "content": item[0]})
+                        if len(item) == 2 and isinstance(item[1], str):
+                            conversations.append({"role": "assistant", "content": item[1]})
+                        else:
+                            # item里只有一个元素，说明为最后一轮
+                            if index != len(conversation) - 1:
+                                raise ValueError(f"Round {index} has error round")
                     else:
-                        conversation[index] = {"role": "assistant", "content": item}
+                        raise ValueError("Each round in list should be string")
                 else:
                     raise ValueError(
                         "apply_chat_template do not support appling batch conversations, "
                         "so you should apply the conversation one by one."
                     )
-        query = self.chat_template.render(messages=conversation, **self.special_tokens_map)
+        query = self.chat_template.render(
+            messages=conversations, **self.special_tokens_map, add_generation_prompt=add_generation_prompt
+        )
         return query
 
-    def encode_chat_inputs(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
+    def encode_chat_inputs(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}, **kwargs):
         """Encodes conversation to pairs of token ids.
         Turn 0: bos + system + sep + user     bot + eos
         Turn t: sep + bot + query             bot + eos
@@ -708,13 +721,14 @@ class ChatTemplateMixin:
         """
         if not self.chat_template:
             raise ValueError("chat_template is not set, please set chat_template first.")
-        # elif isinstance(self.chat_template, Template):
-        #     query = self._apply_chat_template(conversations, context_data)
-        # elif isinstance(self.chat_template, ChatTemplate):
-        return self._encode_chat_inputs_paddle(conversations, context_data)
+        elif isinstance(self.chat_template, Template):
+            add_generation_prompt = kwargs.pop("add_generation_prompt", True)
+            query = self._encode_chat_inputs(conversations, context_data, add_generation_prompt=add_generation_prompt)
+        elif isinstance(self.chat_template, ChatTemplate):
+            query = self._encode_chat_inputs_paddle(conversations, context_data)
+        return query
 
     def _encode_chat_inputs_paddle(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
-        breakpoint()
         context_data = self.chat_template._init_context_data(context_data)
         # encode system
         result = {}
@@ -739,27 +753,64 @@ class ChatTemplateMixin:
         result["conversations"] = conversation_ids
         return result
 
-    def _encode_chat_inputs(self, conversations: List[List[str, str]], context_data: Dict[str, Any] = {}):
-        system_message = {}
-        # encode system
+    def _encode_chat_inputs(
+        self,
+        conversations: List[List[str, str]],
+        context_data: Dict[str, Any] = {},
+        system: str = None,
+        add_generation_prompt=True,
+    ):
         result = {}
-        if self.chat_template.system:
-            system = self.chat_template.render_system(context_data)
-            result["system"] = self.encode(system, add_special_tokens=False)["input_ids"]
+        # conversation = []
+        # if origin_msg[0]['role'] == 'system':
+        #     system = origin_msg.pop(0)
+        if system:
+            try:
+                self.chat_template.render(messages={"role": "system", "content": system})
+            except Exception as e:
+                raise ValueError("System is not supported in this tokenizer.", e)
 
-        # encode conversation
-        conversation_ids = []
-        for index, conversation in enumerate(conversations):
-            # give more control to chat_template
-            context_data["is_first"] = index == 0
-            context_data["is_last"] = index == len(conversations) - 1
+        conversation_dict = []
+        origin_msg = []
+        for round in conversations:
+            round_role = [
+                {"role": "user", "content": round[0]},
+                {"role": "assistant", "content": round[1]},
+            ]
+            origin_msg.extend(round_role)
+            conversation_dict.append(round_role)
+        ans = []
 
-            user_input, bot_output = self.chat_template.render_conversation(
-                conversation, index=index, context_data=context_data
+        for conv in conversation_dict:
+            roundi = [system] + conv if system else conv
+            roundi_str = self.chat_template.render(messages=roundi, add_generation_prompt=False)
+            roundi_no_ans = [system] + [conv[0]] if system else [conv[0]]
+            roundi_no_ans_str = self.chat_template.render(
+                messages=roundi_no_ans, add_generation_prompt=add_generation_prompt
             )
-            user_ids = self.encode(user_input, add_special_tokens=False)["input_ids"]
-            bot_ids = self.encode(bot_output, add_special_tokens=False)["input_ids"]
-            conversation_ids.append([user_ids, bot_ids])
+            ans_roundi = roundi_str[len(roundi_no_ans_str) :]
+            ans.append(ans_roundi)
+
+        regex_pattern = "|".join(map(re.escape, ans))
+        non_learnable_parts = re.split(
+            r"(?:%s)" % regex_pattern,
+            self.chat_template.render(messages=origin_msg, add_generation_prompt=False),
+        )
+        if non_learnable_parts[-1] == "":
+            non_learnable_parts.pop()
+
+        assert len(non_learnable_parts) == len(ans)
+
+        conversation_ids = []
+        for i in range(len(non_learnable_parts)):
+            conversation_ids.append(
+                self.batch_encode(
+                    [non_learnable_parts[i], ans[i]],
+                    add_special_tokens=False,
+                    padding=False,
+                )["input_ids"]
+            )
+            # print(self.batch_decode(conversation_ids[i]))
 
         result["conversations"] = conversation_ids
         return result
