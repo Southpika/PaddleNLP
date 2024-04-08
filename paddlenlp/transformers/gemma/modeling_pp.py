@@ -1,4 +1,4 @@
-# Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,11 @@
 import paddle
 import paddle.distributed.fleet as fleet
 import paddle.nn as nn
-from paddle.distributed.fleet.meta_parallel import LayerDesc, PipelineLayer
+from paddle.distributed.fleet.meta_parallel import (
+    LayerDesc,
+    PipelineLayer,
+    SharedLayerDesc,
+)
 from paddle.distributed.fleet.utils import recompute
 
 from paddlenlp.transformers.model_utils import PipelinePretrainedModel
@@ -87,6 +91,13 @@ def return_args(hidden_states, attention_mask=None, position_ids=None, alibi=Non
     return ret
 
 
+def get_attr(layer, name):
+    if getattr(layer, name, None) is not None:
+        return getattr(layer, name, None)
+    else:
+        return get_attr(layer._layer, name)
+
+
 class GemmaEmbeddingPipe(nn.Layer):
     """Extends GemmaEmbeddings to forward attention_mask through the pipeline."""
 
@@ -103,6 +114,10 @@ class GemmaEmbeddingPipe(nn.Layer):
             )
         else:
             self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+
+    @property
+    def embedding_weight(self):
+        return get_attr(self.embed_tokens, "weight")
 
     def forward(self, args):
         """_summary_
@@ -160,7 +175,8 @@ class GemmaEmbeddingPipe(nn.Layer):
             )
             attention_mask.stop_gradient = True
 
-        return return_args(input_embeds, attention_mask, position_ids, alibi)
+        hidden_states = input_embeds * (self.config.hidden_size**0.5)
+        return return_args(hidden_states, attention_mask, position_ids, alibi)
 
 
 class GemmaDecoderLayerPipe(GemmaDecoderLayer):
@@ -198,6 +214,15 @@ class GemmaRMSNormPipe(nn.Layer):
     def forward(self, args):
         hidden_states, attention_mask, position_ids, alibi = parse_args(args)
         return self.norm(hidden_states)
+
+
+class GemmaLMHeadPipe(GemmaLMHead):
+    def __init__(self, config):
+        super(GemmaLMHeadPipe, self).__init__(config)
+
+    @property
+    def embedding_weight(self):
+        return get_attr(self, "weight")
 
 
 class GemmaForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
@@ -238,7 +263,15 @@ class GemmaForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
         config.tensor_parallel_degree = tensor_parallel_degree
         config.tensor_parallel_rank = tensor_parallel_rank
 
-        self.add_sequential_layer(LayerDesc(GemmaEmbeddingPipe, config=config), "gemma")
+        self.add_sequential_layer(
+            SharedLayerDesc(
+                key="gemma_weigt_share",
+                layer_func=GemmaEmbeddingPipe,
+                shared_weight_attr="embedding_weight",
+                config=config,
+            ),
+            "gemma",
+        )
         for i in range(config.num_hidden_layers):
             self.add_sequential_layer(
                 LayerDesc(GemmaDecoderLayerPipe, config=config, layerwise_recompute=i not in self.no_recompute_layers),
@@ -246,7 +279,15 @@ class GemmaForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
             )
 
         self.add_sequential_layer(LayerDesc(GemmaRMSNormPipe, config=config), "gemma")
-        self.add_sequential_layer(LayerDesc(GemmaLMHead, config=config), "lm_head")
+        self.add_sequential_layer(
+            SharedLayerDesc(
+                key="gemma_weigt_share",
+                layer_func=GemmaLMHeadPipe,
+                shared_weight_attr="embedding_weight",
+                config=config,
+            ),
+            "lm_head",
+        )
 
         recompute_interval = 0
 
@@ -268,8 +309,6 @@ class GemmaForCausalLMPipe(PipelinePretrainedModel, PipelineLayer):
             },
             num_virtual_pipeline_stages=virtual_pp_degree,
         )
-        # breakpoint()
-        # You should call init here, since there is a  diamond inheritance problem
         self.apply(self._init_weights)
         # DON'T init PipelinePretrainedModel
         # PipelinePretrainedModel.__init__(self.super(), config=config)
