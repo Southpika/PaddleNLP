@@ -55,12 +55,12 @@ else:
         way it should behave.
         """
 
-        content: str = field(default_factory=str)
-        single_word: bool = False
-        lstrip: bool = False
-        rstrip: bool = False
-        normalized: bool = True
-        special:bool = False
+    content: str = field(default_factory=str)
+    single_word: bool = False
+    lstrip: bool = False
+    rstrip: bool = False
+    normalized: bool = True
+    special: bool = True
 
         def __getstate__(self):
             return self.__dict__

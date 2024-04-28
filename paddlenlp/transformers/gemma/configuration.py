@@ -41,7 +41,7 @@ GEMMA_PRETRAINED_INIT_CONFIGURATION = {
         "use_cache": True,
         "use_recompute": False,
         "use_flash_attention": False,
-    }
+    },
 }
 
 

@@ -33,14 +33,16 @@ try:
 except ImportError:
     fused_rotary_position_embedding = None
 
-
-from paddle.distributed.fleet.utils.sequence_parallel_utils import (
-    ColumnSequenceParallelLinear,
-    GatherOp,
-    RowSequenceParallelLinear,
-    ScatterOp,
-    mark_as_sequence_parallel_parameter,
-)
+try:
+    from paddle.distributed.fleet.utils.sequence_parallel_utils import (
+        ColumnSequenceParallelLinear,
+        GatherOp,
+        RowSequenceParallelLinear,
+        ScatterOp,
+        mark_as_sequence_parallel_parameter,
+    )
+except:
+    pass
 
 from paddlenlp.transformers.conversion_utils import (
     StateDictNameMapping,
@@ -154,9 +156,7 @@ def repeat_kv(hidden_states: paddle.Tensor, n_rep: int) -> paddle.Tensor:
     return hidden_states.reshape([batch, slen, num_key_value_heads * n_rep, head_dim])
 
 
-def parallel_matmul(
-    x: Tensor, y: paddle.base.framework.EagerParamBase, tensor_parallel_output=True, transpose_y=False
-):
+def parallel_matmul(x: Tensor, y, tensor_parallel_output=True, transpose_y=False):
     is_fleet_init = True
     tensor_parallel_degree = 1
     try:
@@ -401,7 +401,7 @@ def rotate_half(x):
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
 
     if position_ids is None:
-        # Note: Only for LlamaForCausalLMPipe model pretraining
+        # Note: Only for ForCausalLMPipe model pretraining
         cos = cos[:, : q.shape[1], :, :]  # [bs, seq_len, 1, dim]
         sin = sin[:, : q.shape[1], :, :]  # [bs, seq_len, 1, dim]
     else:
@@ -918,7 +918,7 @@ class GemmaPretrainedModel(PretrainedModel):
             ]
             model_mappings.extend(layer_mappings)
         init_name_mappings(mappings=model_mappings)
-        # base-model prefix "LlamaModel"
+        # base-model prefix "GemmaModel"
         if "GemmaModel" not in config.architectures:
             for mapping in model_mappings:
                 mapping[0] = "model." + mapping[0]
@@ -1299,7 +1299,7 @@ class GemmaModel(GemmaPretrainedModel):
 
 class GemmaPretrainingCriterion(nn.Layer):
     """
-    Criterion for Llama.
+    Criterion for gemma. Copied From Llama
     It calculates the final loss.
     """
 

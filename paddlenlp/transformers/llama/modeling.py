@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import math
+import os
 import warnings
 from functools import partial
 from typing import Optional, Tuple
@@ -44,18 +45,26 @@ except ImportError:
         return F.silu(x) * y
 
 
-from paddle.distributed.fleet.utils.sequence_parallel_utils import (
-    ColumnSequenceParallelLinear,
-    GatherOp,
-    RowSequenceParallelLinear,
-    ScatterOp,
-    mark_as_sequence_parallel_parameter,
-)
+try:
+    from paddle.distributed.fleet.utils.sequence_parallel_utils import (
+        ColumnSequenceParallelLinear,
+        GatherOp,
+        RowSequenceParallelLinear,
+        ScatterOp,
+        mark_as_sequence_parallel_parameter,
+    )
+except:
+    pass
 from paddle.utils import try_import
 
 from paddlenlp.transformers.conversion_utils import (
     StateDictNameMapping,
     init_name_mappings,
+)
+from paddlenlp.transformers.long_sequence_strategies import LongSequenceStrategies
+from paddlenlp.transformers.mc2_parallel_linear import (
+    MC2ColumnSeqParallelLinear,
+    MC2RowSeqParallelLinear,
 )
 from paddlenlp.transformers.model_outputs import (
     BaseModelOutputWithPastAndCrossAttentions,
@@ -74,8 +83,6 @@ from .configuration import (
 
 try:
     if get_env_device() == "npu":
-        import os
-
         from paddle.base import core
 
         for lib in os.listdir(os.getenv("CUSTOM_DEVICE_ROOT")):
@@ -564,8 +571,12 @@ class LlamaMLP(nn.Layer):
         self.fuse_attention_ffn = config.fuse_attention_ffn
 
         if config.sequence_parallel:
-            ColumnParallelLinear = ColumnSequenceParallelLinear
-            RowParallelLinear = RowSequenceParallelLinear
+            if MC2ColumnSeqParallelLinear is not None and MC2RowSeqParallelLinear is not None:
+                ColumnParallelLinear = MC2ColumnSeqParallelLinear
+                RowParallelLinear = MC2RowSeqParallelLinear
+            else:
+                ColumnParallelLinear = ColumnSequenceParallelLinear
+                RowParallelLinear = RowSequenceParallelLinear
         else:
             ColumnParallelLinear = fleet.meta_parallel.ColumnParallelLinear
             RowParallelLinear = fleet.meta_parallel.RowParallelLinear
@@ -669,7 +680,7 @@ class LlamaAttention(nn.Layer):
                 )
 
         self.use_fused_rope = config.use_fused_rope
-        if self.use_fused_rope:
+        if self.use_fused_rope and get_env_device() != "npu":
             if "gpu" not in paddle.device.get_device() or fused_rotary_position_embedding is None:
                 warnings.warn(
                     "Enable fuse rope in the config, but fuse rope is not available. "
@@ -678,8 +689,12 @@ class LlamaAttention(nn.Layer):
                 self.use_fused_rope = False
 
         if config.sequence_parallel:
-            ColumnParallelLinear = ColumnSequenceParallelLinear
-            RowParallelLinear = RowSequenceParallelLinear
+            if MC2ColumnSeqParallelLinear is not None and MC2RowSeqParallelLinear is not None:
+                ColumnParallelLinear = MC2ColumnSeqParallelLinear
+                RowParallelLinear = MC2RowSeqParallelLinear
+            else:
+                ColumnParallelLinear = ColumnSequenceParallelLinear
+                RowParallelLinear = RowSequenceParallelLinear
         else:
             ColumnParallelLinear = fleet.meta_parallel.ColumnParallelLinear
             RowParallelLinear = fleet.meta_parallel.RowParallelLinear
@@ -763,7 +778,14 @@ class LlamaAttention(nn.Layer):
             )
 
         if config.rope:
-            self._init_rope()
+            if config.use_long_sequence_strategies:
+                self.rotary_emb = LongSequenceStrategies.build_long_sequence_strategy(
+                    config.long_sequence_strategy_type,
+                    config.long_sequence_strategy_name,
+                    **config.long_sequence_init_args,
+                )
+            else:
+                self._init_rope()
 
         self.reshard_layer = None
         if config.sep_parallel_degree > 1:
@@ -778,24 +800,28 @@ class LlamaAttention(nn.Layer):
             self.rotary_emb = LlamaRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
+                base=self.config.rope_theta,
             )
         elif self.config.rope_scaling_type == "linear":
             self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 scaling_factor=self.config.rope_scaling_factor,
+                base=self.config.rope_theta,
             )
         elif self.config.rope_scaling_type == "ntk":
             self.rotary_emb = LlamaNTKScalingRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 scaling_factor=self.config.rope_scaling_factor,
+                base=self.config.rope_theta,
             )
         elif self.config.rope_scaling_type == "dynamic_ntk":
             self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
                 self.head_dim,
                 max_position_embeddings=self.max_position_embeddings,
                 scaling_factor=self.config.rope_scaling_factor,
+                base=self.config.rope_theta,
             )
         else:
             raise ValueError(f"Unknown RoPE scaling type {self.config.rope_scaling_type}")
@@ -868,6 +894,7 @@ class LlamaAttention(nn.Layer):
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
             value_states = self.v_proj(hidden_states)
+
             if self.reshard_layer is not None:
                 if self.sequence_parallel:
                     assert self.seq_length % self.config.sep_parallel_degree == 0
@@ -972,7 +999,17 @@ class LlamaAttention(nn.Layer):
                             use_neox_rotary_style=False,
                         )
             else:
-                cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+                if self.config.use_long_sequence_strategies:
+                    cos, sin = self.rotary_emb(seq_len=kv_seq_len)
+                    cos = cos[None, :, None, :]
+                    sin = sin[None, :, None, :]
+                    cos, sin = (
+                        cos.cast(value_states.dtype) if cos.dtype != value_states.dtype else cos,
+                        sin.cast(value_states.dtype) if sin.dtype != value_states.dtype else sin,
+                    )
+                else:
+                    cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+
                 query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         # [bs, seq_len, num_head, head_dim]
@@ -982,7 +1019,6 @@ class LlamaAttention(nn.Layer):
             value_states = paddle.concat([past_key_value[1], value_states], axis=1)
 
         past_key_value = (key_states, value_states) if use_cache else None
-
         if self.kv_indices is not None:
             key_states = paddle.index_select(key_states, self.kv_indices, axis=2)
             value_states = paddle.index_select(value_states, self.kv_indices, axis=2)
@@ -991,7 +1027,7 @@ class LlamaAttention(nn.Layer):
         # repeat k/v heads if n_kv_heads < n_heads
         # paddle version > 2.6 or develop support flash-attn with gqa/mqa
         paddle_version = float(paddle.__version__[:3])
-        if (paddle_version != 0.0) and (paddle_version <= 2.6):
+        if not self.config.use_flash_attention or ((paddle_version != 0.0) and (paddle_version <= 2.6)):
             key_states = repeat_kv(key_states, self.num_key_value_groups)
             value_states = repeat_kv(value_states, self.num_key_value_groups)
 
@@ -1258,6 +1294,56 @@ class LlamaPretrainedModel(PretrainedModel):
 
         return mappings
 
+    @classmethod
+    def _get_fuse_or_split_param_mappings(cls, config: LlamaConfig, is_fuse=False):
+        # return parameter fuse utils
+        from paddlenlp.transformers.conversion_utils import split_or_fuse_func
+
+        fn = split_or_fuse_func(is_fuse=is_fuse)
+
+        # last key is fused key, other keys are to be fused.
+        fuse_qkv_keys = (
+            "layers.0.self_attn.q_proj.weight",
+            "layers.0.self_attn.k_proj.weight",
+            "layers.0.self_attn.v_proj.weight",
+            "layers.0.self_attn.qkv_proj.weight",
+        )
+
+        fuse_gate_up_keys = (
+            "layers.0.mlp.gate_proj.weight",
+            "layers.0.mlp.up_proj.weight",
+            "layers.0.mlp.gate_up_fused_proj.weight",
+        )
+        num_heads = config.num_attention_heads
+        num_key_value_heads = getattr(config, "num_key_value_heads", num_heads)
+        fuse_attention_qkv = getattr(config, "fuse_attention_qkv", False)
+        fuse_attention_ffn = getattr(config, "fuse_attention_ffn", False)
+
+        final_actions = {}
+        if is_fuse:
+            if fuse_attention_qkv:
+                for i in range(config.num_hidden_layers):
+                    keys = tuple([key.replace("layers.0.", f"layers.{i}.") for key in fuse_qkv_keys])
+                    final_actions[keys] = partial(
+                        fn, is_qkv=True, num_heads=num_heads, num_key_value_heads=num_key_value_heads
+                    )
+            if fuse_attention_ffn:
+                for i in range(config.num_hidden_layers):
+                    keys = tuple([key.replace("layers.0.", f"layers.{i}.") for key in fuse_gate_up_keys])
+                    final_actions[keys] = fn
+        else:
+            if not fuse_attention_qkv:
+                for i in range(config.num_hidden_layers):
+                    keys = tuple([key.replace("layers.0.", f"layers.{i}.") for key in fuse_qkv_keys])
+                    final_actions[keys] = partial(
+                        fn, split_nums=3, is_qkv=True, num_heads=num_heads, num_key_value_heads=num_key_value_heads
+                    )
+            if not fuse_attention_ffn:
+                for i in range(config.num_hidden_layers):
+                    keys = tuple([key.replace("layers.0.", f"layers.{i}.") for key in fuse_gate_up_keys])
+                    final_actions[keys] = partial(fn, split_nums=2)
+        return final_actions
+
     def _init_weights(self, layer):
         """Initialization hook"""
         if self.config.tensor_parallel_degree > 1:
@@ -1326,6 +1412,7 @@ class LlamaModel(LlamaPretrainedModel):
         self.sequence_parallel = config.sequence_parallel
         self.recompute_granularity = config.recompute_granularity
         self.no_recompute_layers = config.no_recompute_layers if config.no_recompute_layers is not None else []
+        self.config = config
 
         # Recompute defaults to False and is controlled by Trainer
         self.enable_recompute = False
@@ -1462,7 +1549,7 @@ class LlamaModel(LlamaPretrainedModel):
         seq_length_with_past = seq_length
         cache_length = 0
         if past_key_values[0] is not None:
-            cache_length = paddle.shape(past_key_values[0][0])[1]
+            cache_length = past_key_values[0][0].shape[1]
             seq_length_with_past += cache_length
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -1479,7 +1566,15 @@ class LlamaModel(LlamaPretrainedModel):
             # [bs, seq_len]
             attention_mask = paddle.ones((batch_size, seq_length_with_past), dtype=paddle.bool)
         if self.config.alibi:
-            alibi = build_alibi_tensor(attention_mask, self.config.num_attention_heads, dtype=inputs_embeds.dtype)
+            if self.config.use_long_sequence_strategies:
+                alibi_layer = LongSequenceStrategies.build_long_sequence_strategy(
+                    self.config.long_sequence_strategy_type,
+                    self.config.long_sequence_strategy_name,
+                    **self.config.long_sequence_init_args,
+                )
+                alibi = alibi_layer(attention_mask, self.config.num_attention_heads, dtype=inputs_embeds.dtype)
+            else:
+                alibi = build_alibi_tensor(attention_mask, self.config.num_attention_heads, dtype=inputs_embeds.dtype)
             if self.config.tensor_parallel_degree > 1:
                 block_size = self.config.num_attention_heads // self.config.tensor_parallel_degree
                 alibi = alibi[
@@ -1501,11 +1596,13 @@ class LlamaModel(LlamaPretrainedModel):
             attention_mask, (batch_size, seq_length), cache_length, inputs_embeds.dtype
         )  # [bs, 1, seq_len, seq_len]
         if self.config.use_flash_attention:
-            is_casual = is_casual_mask(attention_mask)
-            if is_casual and alibi is None:
-                attention_mask = None
+            if get_env_device() != "npu":
+                is_casual = is_casual_mask(attention_mask)
+                if is_casual and alibi is None:
+                    attention_mask = None
+            else:
+                attention_mask = attention_mask.astype("bool")
         hidden_states = inputs_embeds
-
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None

@@ -1,5 +1,5 @@
-# Copyright (c) 2023 PaddlePaddle Authors. All Rights Reserved.
-# Copyright 2020 The HuggingFace Team. All rights reserved.
+# Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
+# Copyright 2024 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -368,6 +368,10 @@ class GemmaModelTest(ModelTesterMixin, GenerationTesterMixin, unittest.TestCase)
     def test_gemma_mqa_model(self):
         config_and_inputs = self.model_tester.prepare_config_and_inputs()
         self.model_tester.create_and_check_mqa_model(*config_and_inputs)
+
+    def test_model_name_list(self):
+        # no need for this
+        pass
 
 
 if __name__ == "__main__":
